@@ -13,6 +13,7 @@ const express = require('express')
 const app = express()
 const dbConfig = require('./config/dbConfig')
 const userRoutes = require('./routes/userRoutes')
+const whatsappRoutes = require('./routes/whatsappRoutes')
 const cors = require('cors')
 
 
@@ -25,7 +26,11 @@ const corsOptions = rawOrigins.length
 
 app.use(cors(corsOptions));
 app.use(express.json())
+// Basic health checks
+app.get('/', (req, res) => res.status(200).send('OK'))
+app.get('/healthz', (req, res) => res.status(200).json({ status: 'ok' }))
 app.use('/api/users', userRoutes)
+app.use('/api/whatsapp', whatsappRoutes)
 
 
 const PORT = parseInt(process.env.PORT || '8082', 10)
