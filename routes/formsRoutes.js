@@ -1,0 +1,195 @@
+const express = require('express')
+const axios = require('axios')
+
+const router = express.Router()
+
+const GOOGLE_FORM_DEFAULTS = {
+  fvv: '1',
+  draftResponse: '[]',
+  pageHistory: '0',
+}
+
+function normalizeString(value) {
+  if (value === null || value === undefined) return ''
+  if (typeof value === 'string') return value.trim()
+  return String(value).trim()
+}
+
+function ensureEntries(obj) {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return {}
+  }
+  return obj
+}
+
+function buildFormUrl(formId) {
+  return `https://docs.google.com/forms/d/e/${formId}/formResponse`
+}
+
+async function submitToGoogleForm(formId, entriesInput) {
+  const entries = { ...GOOGLE_FORM_DEFAULTS, ...ensureEntries(entriesInput) }
+  const params = new URLSearchParams()
+  Object.entries(entries).forEach(([key, value]) => {
+    if (value === undefined || value === null) return
+    params.append(key, value === '' ? '' : String(value))
+  })
+
+  await axios.post(buildFormUrl(formId), params.toString(), {
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  })
+}
+
+// --- CSV helpers (no DB persistence) ---
+const parseCsv = (text) => {
+  const rows = []
+  let row = [], col = '', inQuotes = false
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i], n = text[i + 1]
+    if (c === '"' && !inQuotes) { inQuotes = true; continue }
+    if (c === '"' && inQuotes) { if (n === '"') { col += '"'; i++; continue } inQuotes = false; continue }
+    if (c === ',' && !inQuotes) { row.push(col); col = ''; continue }
+    if ((c === '\n' || c === '\r') && !inQuotes) { if (col !== '' || row.length) { row.push(col); rows.push(row); row = []; col = '' } if (c === '\r' && n === '\n') i++; continue }
+    col += c
+  }
+  if (col !== '' || row.length) { row.push(col); rows.push(row) }
+  return rows
+}
+
+const findSerialIdx = (headers = [], kind = 'quotation') => {
+  const rxQ = /^(quotation\s*no\.?|quotation\s*number|serial\s*no\.?|serial|quote\s*id)$/i
+  const rxJ = /^(jc\s*no\.?|jc\s*number|job\s*card\s*no\.?|job\s*card\s*number|serial(?:\s*no\.?)?)$/i
+  const rx = kind === 'jobcard' ? rxJ : rxQ
+  let idx = headers.findIndex((h) => rx.test(String(h || '').trim()))
+  if (idx >= 0) return idx
+  idx = headers.findIndex((h) => /serial/i.test(String(h || '')))
+  return idx >= 0 ? idx : -1
+}
+
+const parseIntStrict = (s) => {
+  const t = String(s || '').trim()
+  return /^\d+$/.test(t) ? parseInt(t, 10) : null
+}
+
+async function fetchCsv(url) {
+  const res = await axios.get(url, { responseType: 'text', validateStatus: () => true })
+  if (String(res.status).startsWith('2')) return res.data
+  throw new Error(`CSV fetch failed with status ${res.status}`)
+}
+
+async function nextSerialFromCsv(url, kind = 'quotation') {
+  const csv = await fetchCsv(url)
+  const rows = parseCsv(csv)
+  if (!rows.length) return '1'
+  const header = rows[0] || []
+  const idx = findSerialIdx(header, kind)
+  if (idx < 0) return '1'
+  for (let i = rows.length - 1; i >= 1; i--) {
+    const n = parseIntStrict(rows[i][idx])
+    if (n !== null && Number.isFinite(n)) return String(n + 1)
+  }
+  let max = 0
+  for (let i = 1; i < rows.length; i++) {
+    const n = parseIntStrict(rows[i][idx])
+    if (n !== null && n > max) max = n
+  }
+  return String(max + 1 || 1)
+}
+
+async function serialExistsInCsv(url, serial, kind = 'quotation') {
+  if (!serial) return false
+  const csv = await fetchCsv(url)
+  const rows = parseCsv(csv)
+  if (!rows.length) return false
+  const header = rows[0] || []
+  const idx = findSerialIdx(header, kind)
+  if (idx < 0) return false
+  return rows.slice(1).some(r => String(r[idx]).trim() === String(serial).trim())
+}
+
+router.get('/quotation/next-serial', async (req, res) => {
+  try {
+    const csvUrl = req.query.csv || process.env.QUOTATION_RESPONSES_CSV_URL
+    if (!csvUrl) return res.json({ success: true, nextSerial: '1' })
+    const nextSerial = await nextSerialFromCsv(csvUrl, 'quotation')
+    return res.json({ success: true, nextSerial })
+  } catch (error) {
+    console.error('Failed to fetch next quotation serial:', error)
+    return res.status(500).json({ success: false, message: 'Unable to fetch next serial number.' })
+  }
+})
+
+router.post('/quotation', async (req, res) => {
+  try {
+    const { formId, entries: rawEntries, payload, serialNo, serialEntryId, responsesCsvUrl } = req.body || {}
+    if (!formId) {
+      return res.status(400).json({ success: false, message: 'formId is required.' })
+    }
+    const entries = ensureEntries(rawEntries)
+    let serial = normalizeString(serialNo)
+    if (!serial && serialEntryId) serial = normalizeString(entries[serialEntryId])
+    if (!serial) serial = normalizeString(entries.serial || entries.serialNo)
+    if (!serial) {
+      return res.status(400).json({ success: false, message: 'serialNo is required.' })
+    }
+
+    const csvUrl = responsesCsvUrl || process.env.QUOTATION_RESPONSES_CSV_URL
+    if (csvUrl) {
+      try {
+        if (await serialExistsInCsv(csvUrl, serial, 'quotation')) {
+          return res.json({ success: true, duplicate: true, message: 'Quotation already exists in sheet.' })
+        }
+      } catch (e) { /* continue if CSV not reachable */ }
+    }
+
+    await submitToGoogleForm(formId, entries)
+    return res.json({ success: true, submittedToGoogle: true, message: 'Quotation saved to Google Sheet.' })
+  } catch (error) {
+    console.error('Failed to save quotation:', error.response?.data || error)
+    return res.status(500).json({ success: false, message: 'Failed to save quotation.', detail: error.message })
+  }
+})
+
+router.get('/jobcard/next-serial', async (req, res) => {
+  try {
+    const csvUrl = req.query.csv || process.env.JOBCARD_RESPONSES_CSV_URL || process.env.JOBCARD_SHEET_CSV_URL
+    if (!csvUrl) return res.json({ success: true, nextSerial: '1' })
+    const nextSerial = await nextSerialFromCsv(csvUrl, 'jobcard')
+    return res.json({ success: true, nextSerial })
+  } catch (error) {
+    console.error('Failed to fetch next job card serial:', error)
+    return res.status(500).json({ success: false, message: 'Unable to fetch next job card number.' })
+  }
+})
+
+router.post('/jobcard', async (req, res) => {
+  try {
+    const { formId, entries: rawEntries, metadata, jcNo, jcEntryId, responsesCsvUrl } = req.body || {}
+    if (!formId) {
+      return res.status(400).json({ success: false, message: 'formId is required.' })
+    }
+    const entries = ensureEntries(rawEntries)
+    let jobCardNo = normalizeString(jcNo)
+    if (!jobCardNo && jcEntryId) jobCardNo = normalizeString(entries[jcEntryId])
+    if (!jobCardNo) jobCardNo = normalizeString(entries.jcNo)
+    if (!jobCardNo) {
+      return res.status(400).json({ success: false, message: 'jcNo is required.' })
+    }
+
+    const csvUrl = responsesCsvUrl || process.env.JOBCARD_RESPONSES_CSV_URL || process.env.JOBCARD_SHEET_CSV_URL
+    if (csvUrl) {
+      try {
+        if (await serialExistsInCsv(csvUrl, jobCardNo, 'jobcard')) {
+          return res.json({ success: true, duplicate: true, message: 'Job Card already exists in sheet.' })
+        }
+      } catch (e) { /* continue if CSV not reachable */ }
+    }
+
+    await submitToGoogleForm(formId, entries)
+    return res.json({ success: true, submittedToGoogle: true, message: 'Job Card saved to Google Sheet.' })
+  } catch (error) {
+    console.error('Failed to save job card:', error.response?.data || error)
+    return res.status(500).json({ success: false, message: 'Failed to save job card.', detail: error.message })
+  }
+})
+
+module.exports = router

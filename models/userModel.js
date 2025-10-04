@@ -30,6 +30,10 @@ const userSchema = new Schema(
     // Auth (password is already hashed in route; do not hash here again)
     password: { type: String, required: true },
 
+    // Password reset flow
+    resetPasswordToken: { type: String },
+    resetPasswordExpiresAt: { type: Date },
+
     // Employment / Access control
     role: {
       type: String,

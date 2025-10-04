@@ -14,6 +14,7 @@ const app = express()
 const dbConfig = require('./config/dbConfig')
 const userRoutes = require('./routes/userRoutes')
 const whatsappRoutes = require('./routes/whatsappRoutes')
+const formsRoutes = require('./routes/formsRoutes')
 const cors = require('cors')
 
 
@@ -31,6 +32,7 @@ app.get('/', (req, res) => res.status(200).send('OK'))
 app.get('/healthz', (req, res) => res.status(200).json({ status: 'ok' }))
 app.use('/api/users', userRoutes)
 app.use('/api/whatsapp', whatsappRoutes)
+app.use('/api/forms', formsRoutes)
 
 
 const PORT = parseInt(process.env.PORT || '8082', 10)
