@@ -11,7 +11,7 @@ const JWT_SECRET = process.env.JWT_SECRET
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '2d'
 const BCRYPT_SALT_ROUNDS = parseInt(process.env.BCRYPT_SALT_ROUNDS || '10', 10)
 const RESET_TOKEN_EXP_MINUTES = parseInt(process.env.RESET_TOKEN_EXP_MINUTES || '30', 10)
-const APP_URL = (process.env.APP_URL).replace(/\/$/, '')
+const APP_URL = (process.env.APP_URL || 'http://localhost:5173').replace(/\/$/, '')
 if (!JWT_SECRET && process.env.NODE_ENV !== 'production') {
   console.warn('JWT_SECRET not set; using insecure default for development')
 }
@@ -259,3 +259,4 @@ router.get('/get-valid-user', authMiddleware, async (req, res) => {
 });
 
 module.exports = router;
+
