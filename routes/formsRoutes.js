@@ -192,4 +192,49 @@ router.post('/jobcard', async (req, res) => {
   }
 })
 
+// Booking: simple pass-through to Google Form. No serial checks.
+router.post('/booking', async (req, res) => {
+  try {
+    const { formId, entries: rawEntries } = req.body || {}
+    if (!formId) {
+      return res.status(400).json({ success: false, message: 'formId is required.' })
+    }
+    const entries = ensureEntries(rawEntries)
+    await submitToGoogleForm(formId, entries)
+    return res.json({ success: true, submittedToGoogle: true, message: 'Booking saved to Google Sheet.' })
+  } catch (error) {
+    console.error('Failed to save booking:', error.response?.data || error)
+    return res.status(500).json({ success: false, message: 'Failed to save booking.', detail: error.message })
+  }
+})
+
+// Booking via generic webhook (e.g., Google Apps Script Web App)
+router.post('/booking/webhook', async (req, res) => {
+  try {
+    const { webhookUrl, payload, headers, method } = req.body || {}
+    if (!webhookUrl) {
+      return res.status(400).json({ success: false, message: 'webhookUrl is required.' })
+    }
+    const httpMethod = (method || 'POST').toUpperCase()
+    const config = { headers: { 'Content-Type': 'application/json', ...(headers || {}) }, validateStatus: () => true }
+    let resp
+    if (httpMethod === 'GET') {
+      const u = new URL(webhookUrl)
+      Object.entries(payload || {}).forEach(([k, v]) => u.searchParams.append(k, String(v)))
+      resp = await axios.get(u.toString(), config)
+    } else {
+      resp = await axios.post(webhookUrl, payload || {}, config)
+    }
+    if (String(resp.status).startsWith('2')) {
+      return res.json({ success: true, forwarded: true, status: resp.status, data: resp.data })
+    }
+    return res.status(502).json({ success: false, message: 'Webhook call failed', status: resp.status, data: resp.data })
+  } catch (error) {
+    console.error('Failed to post booking via webhook:', error.response?.data || error)
+    return res.status(500).json({ success: false, message: 'Failed to post to webhook.', detail: error.message })
+  }
+})
+
+// Note: Stock movements are now stored in MongoDB (/api/stocks). Google Form relay removed.
+
 module.exports = router
