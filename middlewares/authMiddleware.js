@@ -20,11 +20,19 @@ module.exports = function (req, res, next) {
         token = parts.length > 1 ? parts[parts.length - 1] : parts[0]
       }
     }
+    // Accept token in query/body for environments where proxies strip headers
     if (!token && req.query && typeof req.query.token === 'string') {
       token = String(req.query.token).trim()
     }
+    // Legacy param name used by older frontend builds
+    if (!token && req.query && typeof req.query.tokenkey === 'string') {
+      token = String(req.query.tokenkey).trim()
+    }
     if (!token && req.body && typeof req.body.token === 'string') {
       token = String(req.body.token).trim()
+    }
+    if (!token && req.body && typeof req.body.tokenkey === 'string') {
+      token = String(req.body.tokenkey).trim()
     }
     if (!token) throw new Error('Missing token')
 
