@@ -2,6 +2,7 @@ const express = require('express')
 const axios = require('axios')
 
 const router = express.Router()
+const Branch = require('../models/branchModel')
 
 const GOOGLE_FORM_DEFAULTS = {
   fvv: '1',
@@ -13,6 +14,29 @@ function normalizeString(value) {
   if (value === null || value === undefined) return ''
   if (typeof value === 'string') return value.trim()
   return String(value).trim()
+}
+
+function normalizeMobile10(raw) {
+  const d = String(raw || '').replace(/\D/g, '').slice(-10)
+  return d.length === 10 ? d : ''
+}
+
+function shortId6() {
+  try {
+    const { ulid } = require('ulid')
+    const id = ulid() // Crockford base32, 26 chars
+    return id.slice(-6)
+  } catch (e) {
+    const crypto = require('crypto')
+    return crypto.randomBytes(4).toString('hex').slice(-6).toUpperCase()
+  }
+}
+
+// No DB reservation: generate a human-friendly serial per request
+function buildSerial(kind, branchCode) {
+  const bc = String(branchCode || '').trim().toUpperCase()
+  const prefix = kind === 'jobcard' ? 'JC' : 'Q'
+  return `${prefix}-${bc}-${shortId6()}`
 }
 
 function ensureEntries(obj) {
@@ -109,12 +133,34 @@ async function serialExistsInCsv(url, serial, kind = 'quotation') {
 router.get('/quotation/next-serial', async (req, res) => {
   try {
     const csvUrl = req.query.csv || process.env.QUOTATION_RESPONSES_CSV_URL
-    if (!csvUrl) return res.json({ success: true, nextSerial: '1' })
+    if (!csvUrl) return res.json({ success: true, nextSerial: '1', source: 'fallback' })
     const nextSerial = await nextSerialFromCsv(csvUrl, 'quotation')
-    return res.json({ success: true, nextSerial })
+    return res.json({ success: true, nextSerial, source: 'csv' })
   } catch (error) {
     console.error('Failed to fetch next quotation serial:', error)
     return res.status(500).json({ success: false, message: 'Unable to fetch next serial number.' })
+  }
+})
+
+// Reserve a server-issued quotation serial for a given mobile (idempotent per mobile)
+router.post('/quotation/serial/reserve', async (req, res) => {
+  try {
+    const m10 = normalizeMobile10(req.body?.mobile)
+    let bc = String(req.body?.branchCode || '').trim().toUpperCase()
+    const branchId = req.body?.branchId
+    if (!bc && branchId) {
+      try {
+        const br = await Branch.findById(branchId).lean()
+        if (br?.code) bc = String(br.code).toUpperCase()
+      } catch {}
+    }
+    if (!m10) return res.status(400).json({ success: false, message: 'Valid 10-digit mobile is required' })
+    if (!bc) return res.status(400).json({ success: false, message: 'branchCode is required' })
+    const serial = buildSerial('quotation', bc)
+    return res.json({ success: true, serial })
+  } catch (error) {
+    console.error('Failed to reserve quotation serial:', error)
+    return res.status(500).json({ success: false, message: 'Unable to reserve serial' })
   }
 })
 
@@ -152,12 +198,34 @@ router.post('/quotation', async (req, res) => {
 router.get('/jobcard/next-serial', async (req, res) => {
   try {
     const csvUrl = req.query.csv || process.env.JOBCARD_RESPONSES_CSV_URL || process.env.JOBCARD_SHEET_CSV_URL
-    if (!csvUrl) return res.json({ success: true, nextSerial: '1' })
+    if (!csvUrl) return res.json({ success: true, nextSerial: '1', source: 'fallback' })
     const nextSerial = await nextSerialFromCsv(csvUrl, 'jobcard')
-    return res.json({ success: true, nextSerial })
+    return res.json({ success: true, nextSerial, source: 'csv' })
   } catch (error) {
     console.error('Failed to fetch next job card serial:', error)
     return res.status(500).json({ success: false, message: 'Unable to fetch next job card number.' })
+  }
+})
+
+// Reserve a server-issued jobcard serial for a given mobile (idempotent per mobile)
+router.post('/jobcard/serial/reserve', async (req, res) => {
+  try {
+    const m10 = normalizeMobile10(req.body?.mobile)
+    let bc = String(req.body?.branchCode || '').trim().toUpperCase()
+    const branchId = req.body?.branchId
+    if (!bc && branchId) {
+      try {
+        const br = await Branch.findById(branchId).lean()
+        if (br?.code) bc = String(br.code).toUpperCase()
+      } catch {}
+    }
+    if (!m10) return res.status(400).json({ success: false, message: 'Valid 10-digit mobile is required' })
+    if (!bc) return res.status(400).json({ success: false, message: 'branchCode is required' })
+    const serial = buildSerial('jobcard', bc)
+    return res.json({ success: true, serial })
+  } catch (error) {
+    console.error('Failed to reserve jobcard serial:', error)
+    return res.status(500).json({ success: false, message: 'Unable to reserve serial' })
   }
 })
 
@@ -231,6 +299,33 @@ router.post('/booking/webhook', async (req, res) => {
     return res.status(502).json({ success: false, message: 'Webhook call failed', status: resp.status, data: resp.data })
   } catch (error) {
     console.error('Failed to post booking via webhook:', error.response?.data || error)
+    return res.status(500).json({ success: false, message: 'Failed to post to webhook.', detail: error.message })
+  }
+})
+
+// Jobcard via generic webhook (separate route to avoid confusion with booking)
+router.post('/jobcard/webhook', async (req, res) => {
+  try {
+    const { webhookUrl, payload, headers, method } = req.body || {}
+    if (!webhookUrl) {
+      return res.status(400).json({ success: false, message: 'webhookUrl is required.' })
+    }
+    const httpMethod = (method || 'POST').toUpperCase()
+    const config = { headers: { 'Content-Type': 'application/json', ...(headers || {}) }, validateStatus: () => true }
+    let resp
+    if (httpMethod === 'GET') {
+      const u = new URL(webhookUrl)
+      Object.entries(payload || {}).forEach(([k, v]) => u.searchParams.append(k, String(v)))
+      resp = await axios.get(u.toString(), config)
+    } else {
+      resp = await axios.post(webhookUrl, payload || {}, config)
+    }
+    if (String(resp.status).startsWith('2')) {
+      return res.json({ success: true, forwarded: true, status: resp.status, data: resp.data })
+    }
+    return res.status(502).json({ success: false, message: 'Webhook call failed', status: resp.status, data: resp.data })
+  } catch (error) {
+    console.error('Failed to post jobcard via webhook:', error.response?.data || error)
     return res.status(500).json({ success: false, message: 'Failed to post to webhook.', detail: error.message })
   }
 })

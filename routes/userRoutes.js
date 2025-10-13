@@ -142,18 +142,25 @@ router.post('/login', async (req, res) => {
     // Enrich the user payload so the client can render branch/name immediately without a second fetch
     const userDoc = await User.findById(user._id)
       .select('-password')
-      .populate('primaryBranch', 'name')
-      .populate({ path: 'branches', select: 'name', options: { limit: 3 } })
+      .populate('primaryBranch', 'name code')
+      .populate({ path: 'branches', select: 'name code', options: { limit: 3 } })
 
     const full = userDoc ? userDoc.toJSON() : null
     let branchName = null
-    if (userDoc?.primaryBranch && userDoc.primaryBranch.name) branchName = userDoc.primaryBranch.name
-    else if (Array.isArray(userDoc?.branches) && userDoc.branches.length) branchName = userDoc.branches[0]?.name || null
+    let branchCode = null
+    if (userDoc?.primaryBranch && userDoc.primaryBranch.name) {
+      branchName = userDoc.primaryBranch.name
+      branchCode = userDoc.primaryBranch.code || null
+    } else if (Array.isArray(userDoc?.branches) && userDoc.branches.length) {
+      branchName = userDoc.branches[0]?.name || null
+      branchCode = userDoc.branches[0]?.code || null
+    }
     if (full) {
       full.formDefaults = full.formDefaults || {}
       if (!full.formDefaults.staffName) full.formDefaults.staffName = full.name || ''
       if (!full.formDefaults.branchId) full.formDefaults.branchId = userDoc.primaryBranch?._id || (Array.isArray(userDoc.branches) ? userDoc.branches[0]?._id : undefined)
       if (branchName) full.formDefaults.branchName = branchName
+      if (branchCode) full.formDefaults.branchCode = String(branchCode).toUpperCase()
     }
 
     return res.send({
@@ -493,8 +500,8 @@ router.get('/get-valid-user', authMiddleware, async (req, res) => {
   try {
     const userDoc = await User.findById(req.body.userId)
       .select('-password')
-      .populate('primaryBranch', 'name')
-      .populate({ path: 'branches', select: 'name', options: { limit: 3 } })
+      .populate('primaryBranch', 'name code')
+      .populate({ path: 'branches', select: 'name code', options: { limit: 3 } })
 
     if (!userDoc) {
       return res.status(404).send({ success: false, message: 'User not found' })
@@ -502,15 +509,19 @@ router.get('/get-valid-user', authMiddleware, async (req, res) => {
 
     const user = userDoc.toJSON()
     let branchName = null
+    let branchCode = null
     if (userDoc?.primaryBranch && userDoc.primaryBranch.name) {
       branchName = userDoc.primaryBranch.name
+      branchCode = userDoc.primaryBranch.code || null
     } else if (Array.isArray(userDoc?.branches) && userDoc.branches.length) {
       const b0 = userDoc.branches[0]
       branchName = b0?.name || null
+      branchCode = b0?.code || null
     }
 
     if (!user.formDefaults) user.formDefaults = {}
     if (branchName) user.formDefaults.branchName = branchName
+    if (branchCode) user.formDefaults.branchCode = String(branchCode).toUpperCase()
 
     return res.send({
       success: true,

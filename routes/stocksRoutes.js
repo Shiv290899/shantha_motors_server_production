@@ -3,6 +3,7 @@ const router = express.Router()
 const auth = require('../middlewares/authMiddleware')
 const User = require('../models/userModel')
 const StockMovement = require('../models/stockMovementModel')
+const Stock = require('../models/stockModel')
 const { v4: uuidv4 } = require('uuid')
 
 const normalize = (s) => String(s || '')
@@ -65,6 +66,77 @@ function deriveCurrentBranch(m) {
   return null
 }
 
+async function applyMovementToStock(movement) {
+  try {
+    const act = String(movement?.action || '').toLowerCase()
+    const chassisNo = String(movement?.chassisNo || '').trim().toUpperCase()
+    if (!chassisNo) return null
+
+    const baseVehicle = {
+      company: movement.company || undefined,
+      model: movement.model || undefined,
+      variant: movement.variant || undefined,
+      color: movement.color || undefined,
+    }
+
+    if (act === 'add') {
+      // Create or update stock as present in sourceBranch
+      const update = {
+        ...baseVehicle,
+        sourceBranch: movement.sourceBranch || '',
+        status: 'in_stock',
+        lastMovementId: movement.movementId,
+      }
+      const doc = await Stock.findOneAndUpdate(
+        { chassisNo },
+        { $set: update },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      )
+      return doc
+    }
+
+    if (act === 'transfer') {
+      // Move stock to targetBranch; keep previous for UI
+      const existing = await Stock.findOne({ chassisNo })
+      const prevBranch = existing?.sourceBranch || movement.sourceBranch || ''
+      const update = {
+        ...baseVehicle,
+        sourceBranch: movement.targetBranch || existing?.sourceBranch || '',
+        lastSourceBranch: prevBranch,
+        status: 'in_stock',
+        lastMovementId: movement.movementId,
+      }
+      const doc = await Stock.findOneAndUpdate(
+        { chassisNo },
+        { $set: update },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      )
+      return doc
+    }
+
+    if (act === 'return' || act === 'invoice') {
+      // Mark stock as out of inventory
+      const update = {
+        ...baseVehicle,
+        status: 'out',
+        sourceBranch: '',
+        lastMovementId: movement.movementId,
+      }
+      const doc = await Stock.findOneAndUpdate(
+        { chassisNo },
+        { $set: update },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      )
+      return doc
+    }
+
+    return null
+  } catch (e) {
+    console.error('applyMovementToStock failed', e?.message || e)
+    return null
+  }
+}
+
 // Current inventory per chassis (latest movement), optional branch filter
 // GET /api/stocks/current?branch=Name
 router.get('/current', auth, async (req, res) => {
@@ -76,21 +148,49 @@ router.get('/current', auth, async (req, res) => {
     if (!branchName) branchName = await getBranchNameForUser(req.userId)
     const branchKey = normalize(branchName)
 
-    const docs = await StockMovement.find({ deleted: { $ne: true } }).sort({ createdAt: -1 }).lean()
-    const seen = new Set()
-    const items = []
-    for (const m of docs) {
-      const ch = String(m.chassisNo || '').trim().toUpperCase()
-      if (!ch || seen.has(ch)) continue
-      const currentBranch = deriveCurrentBranch(m)
-      // Keep only items that are currently in some branch
-      if (!currentBranch) { seen.add(ch); continue }
-      if (branchKey && normalize(currentBranch) !== branchKey) { seen.add(ch); continue }
-      // For transfer, capture the previous branch for quick reverse suggestion
-      const lastSourceBranch = String(m.sourceBranch || '')
-      items.push({ ...m, sourceBranch: currentBranch, lastSourceBranch })
-      seen.add(ch)
+    // Prefer the current stock snapshot for performance and uniqueness
+    const filter = { status: 'in_stock' }
+    if (branchKey) filter.sourceBranchKey = branchKey
+    let items = await Stock.find(filter).sort({ updatedAt: -1 }).lean()
+
+    // Fallback to movements if snapshot is empty (first-run / migration)
+    if (!items || items.length === 0) {
+      const docs = await StockMovement.find({ deleted: { $ne: true } }).sort({ createdAt: -1 }).lean()
+      const seen = new Set()
+      const fallback = []
+      for (const m of docs) {
+        const ch = String(m.chassisNo || '').trim().toUpperCase()
+        if (!ch || seen.has(ch)) continue
+        const currentBranch = deriveCurrentBranch(m)
+        if (!currentBranch) { seen.add(ch); continue }
+        if (branchKey && normalize(currentBranch) !== branchKey) { seen.add(ch); continue }
+        const lastSourceBranch = String(m.sourceBranch || '')
+        fallback.push({ ...m, sourceBranch: currentBranch, lastSourceBranch })
+        seen.add(ch)
+      }
+      items = fallback
+    } else {
+      // Hydrate action/notes context from last movement for UI parity
+      const ids = items.map((s) => s.lastMovementId).filter(Boolean)
+      if (ids.length) {
+        const moves = await StockMovement.find({ movementId: { $in: ids } }).lean()
+        const byId = new Map(moves.map((m) => [m.movementId, m]))
+        items = items.map((s) => {
+          const m = byId.get(s.lastMovementId) || {}
+          return {
+            ...s,
+            action: m.action || undefined,
+            targetBranch: m.targetBranch || undefined,
+            returnTo: m.returnTo || undefined,
+            customerName: m.customerName || undefined,
+            notes: m.notes || undefined,
+            timestamp: m.timestamp || undefined,
+            movementId: m.movementId || undefined,
+          }
+        })
+      }
     }
+
     return res.json({ success: true, count: items.length, branch: branchName || null, role, data: items })
   } catch (err) {
     console.error('GET /stocks/current failed', err)
@@ -103,19 +203,46 @@ router.get('/current/public', async (req, res) => {
   try {
     const branchName = String(req.query.branch || '').trim()
     const branchKey = normalize(branchName)
-    const docs = await StockMovement.find({ deleted: { $ne: true } }).sort({ createdAt: -1 }).lean()
-    const seen = new Set()
-    const items = []
-    for (const m of docs) {
-      const ch = String(m.chassisNo || '').trim().toUpperCase()
-      if (!ch || seen.has(ch)) continue
-      const currentBranch = deriveCurrentBranch(m)
-      if (!currentBranch) { seen.add(ch); continue }
-      if (branchKey && normalize(currentBranch) !== branchKey) { seen.add(ch); continue }
-      const lastSourceBranch = String(m.sourceBranch || '')
-      items.push({ ...m, sourceBranch: currentBranch, lastSourceBranch })
-      seen.add(ch)
+    const filter = { status: 'in_stock' }
+    if (branchKey) filter.sourceBranchKey = branchKey
+    let items = await Stock.find(filter).sort({ updatedAt: -1 }).lean()
+
+    if (!items || items.length === 0) {
+      const docs = await StockMovement.find({ deleted: { $ne: true } }).sort({ createdAt: -1 }).lean()
+      const seen = new Set()
+      const fallback = []
+      for (const m of docs) {
+        const ch = String(m.chassisNo || '').trim().toUpperCase()
+        if (!ch || seen.has(ch)) continue
+        const currentBranch = deriveCurrentBranch(m)
+        if (!currentBranch) { seen.add(ch); continue }
+        if (branchKey && normalize(currentBranch) !== branchKey) { seen.add(ch); continue }
+        const lastSourceBranch = String(m.sourceBranch || '')
+        fallback.push({ ...m, sourceBranch: currentBranch, lastSourceBranch })
+        seen.add(ch)
+      }
+      items = fallback
+    } else {
+      const ids = items.map((s) => s.lastMovementId).filter(Boolean)
+      if (ids.length) {
+        const moves = await StockMovement.find({ movementId: { $in: ids } }).lean()
+        const byId = new Map(moves.map((m) => [m.movementId, m]))
+        items = items.map((s) => {
+          const m = byId.get(s.lastMovementId) || {}
+          return {
+            ...s,
+            action: m.action || undefined,
+            targetBranch: m.targetBranch || undefined,
+            returnTo: m.returnTo || undefined,
+            customerName: m.customerName || undefined,
+            notes: m.notes || undefined,
+            timestamp: m.timestamp || undefined,
+            movementId: m.movementId || undefined,
+          }
+        })
+      }
     }
+
     return res.json({ success: true, count: items.length, branch: branchName || null, data: items })
   } catch (err) {
     console.error('GET /stocks/current/public failed', err)
@@ -184,6 +311,32 @@ router.post('/', auth, async (req, res) => {
       }
     }
 
+    // Enforce valid source branch on ADD and keep Stock uniqueness semantics
+    if (payload.action === 'add') {
+      if (!payload.sourceBranch) {
+        return res.status(400).json({ success: false, message: 'Source branch is required for add' })
+      }
+      // If an active stock already exists with this chassis, prevent duplicate adds
+      const existingStock = await Stock.findOne({ chassisNo: payload.chassisNo, status: 'in_stock' }).lean()
+      if (existingStock) {
+        const existingBranch = String(existingStock.sourceBranch || '')
+        // If desired add branch differs from where it currently is, convert to transfer
+        if (existingBranch && existingBranch !== payload.sourceBranch) {
+          payload.action = 'transfer'
+          payload.sourceBranch = existingBranch
+          payload.targetBranch = String(payload.targetBranch || '').trim() || String(userBranch || '')
+          if (!payload.targetBranch) {
+            return res.status(400).json({ success: false, message: 'Target branch is required (auto add→transfer)' })
+          }
+          if (payload.notes) payload.notes = `${payload.notes} (auto: add→transfer)`
+          else payload.notes = '(auto: add→transfer)'
+        } else {
+          // Already present in the same branch: reject to avoid duplicate record noise
+          return res.status(409).json({ success: false, message: 'Chassis already exists in this branch' })
+        }
+      }
+    }
+
     // For TRANSFER, trust the last known branch as source of truth
     if (payload.action === 'transfer') {
       if (!payload.targetBranch) {
@@ -198,6 +351,8 @@ router.post('/', auth, async (req, res) => {
     }
 
     const created = await StockMovement.create(payload)
+    // Update current Stock snapshot to enforce uniqueness and branch change after transfer
+    await applyMovementToStock(created)
     return res.status(201).json({ success: true, data: created })
   } catch (err) {
     console.error('POST /stocks failed', err)
@@ -235,6 +390,8 @@ router.patch('/:id', auth, async (req, res) => {
 
     const updated = await StockMovement.findOneAndUpdate({ movementId: id }, patch, { new: true })
     if (!updated) return res.status(404).json({ success: false, message: 'Movement not found' })
+    // Re-apply to stock snapshot in case relevant fields changed
+    await applyMovementToStock(updated)
     return res.json({ success: true, data: updated })
   } catch (err) {
     console.error('PATCH /stocks/:id failed', err)
