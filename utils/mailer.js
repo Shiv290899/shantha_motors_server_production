@@ -1,15 +1,5 @@
 const nodemailer = require('nodemailer')
-
-const {
-  SMTP_HOST,
-  SMTP_PORT,
-  SMTP_SECURE,
-  SMTP_USER,
-  SMTP_PASS,
-  SMTP_FROM,
-} = process.env
-
-let cachedTransporter = null
+hedTransporter = null
 
 function isMailConfigured() {
   return Boolean(SMTP_HOST && SMTP_PORT && SMTP_USER && SMTP_PASS && SMTP_FROM)
