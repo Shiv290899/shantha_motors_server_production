@@ -276,12 +276,53 @@ router.post('/booking', async (req, res) => {
   }
 })
 
+// --- Simple in-memory idempotency for webhook saves ---
+// Prevent duplicate forwards when users click Print/Save multiple times.
+// Keyed by serial (quotation/jobcard). TTL keeps memory bounded across time.
+const IDEMPOTENCY_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const recentSerials = new Map(); // key -> timestamp
+
+function extractSerial(obj) {
+  try {
+    if (!obj) return null;
+    // common shapes from client: { action:'save', data:{ serialNo, formValues, payload } }
+    if (obj.data?.serialNo) return String(obj.data.serialNo);
+    if (obj.serialNo) return String(obj.serialNo);
+    if (obj.formValues?.serialNo) return String(obj.formValues.serialNo);
+    if (obj.payload?.formValues?.serialNo) return String(obj.payload.formValues.serialNo);
+  } catch {}
+  return null;
+}
+
+function isDuplicateSerial(key) {
+  if (!key) return false;
+  const ts = recentSerials.get(key);
+  const now = Date.now();
+  if (ts && now - ts < IDEMPOTENCY_TTL_MS) return true;
+  return false;
+}
+
+function markSerial(key) {
+  if (!key) return;
+  recentSerials.set(key, Date.now());
+  // prune occasionally
+  if (recentSerials.size > 2000) {
+    const cutoff = Date.now() - IDEMPOTENCY_TTL_MS;
+    for (const [k, v] of recentSerials.entries()) { if (v < cutoff) recentSerials.delete(k); }
+  }
+}
+
 // Booking via generic webhook (e.g., Google Apps Script Web App)
 router.post('/booking/webhook', async (req, res) => {
   try {
     const { webhookUrl, payload, headers, method } = req.body || {}
     if (!webhookUrl) {
       return res.status(400).json({ success: false, message: 'webhookUrl is required.' })
+    }
+    // Idempotency for quotation save payloads
+    const serialKey = extractSerial(payload)
+    if (serialKey && isDuplicateSerial(serialKey)) {
+      return res.json({ success: true, duplicateSuppressed: true, message: 'Duplicate save suppressed' })
     }
     const httpMethod = (method || 'POST').toUpperCase()
     const config = { headers: { 'Content-Type': 'application/json', ...(headers || {}) }, validateStatus: () => true }
@@ -294,6 +335,7 @@ router.post('/booking/webhook', async (req, res) => {
       resp = await axios.post(webhookUrl, payload || {}, config)
     }
     if (String(resp.status).startsWith('2')) {
+      if (serialKey) markSerial(serialKey)
       return res.json({ success: true, forwarded: true, status: resp.status, data: resp.data })
     }
     return res.status(502).json({ success: false, message: 'Webhook call failed', status: resp.status, data: resp.data })
@@ -310,6 +352,11 @@ router.post('/jobcard/webhook', async (req, res) => {
     if (!webhookUrl) {
       return res.status(400).json({ success: false, message: 'webhookUrl is required.' })
     }
+    // Idempotency for jobcard save payloads
+    const serialKey = extractSerial(payload)
+    if (serialKey && isDuplicateSerial(serialKey)) {
+      return res.json({ success: true, duplicateSuppressed: true, message: 'Duplicate save suppressed' })
+    }
     const httpMethod = (method || 'POST').toUpperCase()
     const config = { headers: { 'Content-Type': 'application/json', ...(headers || {}) }, validateStatus: () => true }
     let resp
@@ -321,6 +368,7 @@ router.post('/jobcard/webhook', async (req, res) => {
       resp = await axios.post(webhookUrl, payload || {}, config)
     }
     if (String(resp.status).startsWith('2')) {
+      if (serialKey) markSerial(serialKey)
       return res.json({ success: true, forwarded: true, status: resp.status, data: resp.data })
     }
     return res.status(502).json({ success: false, message: 'Webhook call failed', status: resp.status, data: resp.data })

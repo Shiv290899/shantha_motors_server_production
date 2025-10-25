@@ -10,7 +10,7 @@ const crypto = require('crypto')
 const { sendMail, isMailConfigured } = require('../utils/mailer')
 
 const JWT_SECRET = process.env.JWT_SECRET
-const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '2d'
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '1d'
 const BCRYPT_SALT_ROUNDS = parseInt(process.env.BCRYPT_SALT_ROUNDS || '10', 10)
 const RESET_TOKEN_EXP_MINUTES = parseInt(process.env.RESET_TOKEN_EXP_MINUTES || '30', 10)
 const APP_URL = (process.env.APP_URL || 'http://localhost:5174').replace(/\/$/, '')
@@ -138,6 +138,9 @@ router.post('/login', async (req, res) => {
     const jwtToken = jwt.sign({ userId: user._id }, JWT_SECRET || 'shantha_motors', {
       expiresIn: JWT_EXPIRES_IN,
     })
+
+    // Update last login timestamp (for dashboard visibility)
+    try { await User.updateOne({ _id: user._id }, { $set: { lastLoginAt: new Date() } }) } catch { /* non-blocking */ }
 
     // Enrich the user payload so the client can render branch/name immediately without a second fetch
     const userDoc = await User.findById(user._id)
@@ -501,11 +504,24 @@ router.get('/get-valid-user', authMiddleware, async (req, res) => {
     const userDoc = await User.findById(req.body.userId)
       .select('-password')
       .populate('primaryBranch', 'name code')
-      .populate({ path: 'branches', select: 'name code', options: { limit: 3 } })
+      // Return all associated branches (name + code + _id) so UI can list them
+      .populate({ path: 'branches', select: 'name code' })
 
     if (!userDoc) {
       return res.status(404).send({ success: false, message: 'User not found' })
     }
+
+    // Soft-touch: bump lastLoginAt if missing or stale (10 min) so dashboards reflect activity
+    try {
+      const now = new Date()
+      const last = userDoc.lastLoginAt ? new Date(userDoc.lastLoginAt) : null
+      const stale = !last || (now.getTime() - last.getTime() > 10 * 60 * 1000)
+      if (stale) {
+        await User.updateOne({ _id: userDoc._id }, { $set: { lastLoginAt: now } })
+        // Also reflect in the serialized object we return
+        userDoc.lastLoginAt = now
+      }
+    } catch { /* non-blocking */ }
 
     const user = userDoc.toJSON()
     let branchName = null

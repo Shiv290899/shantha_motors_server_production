@@ -17,6 +17,7 @@ const whatsappRoutes = require('./routes/whatsappRoutes')
 const formsRoutes = require('./routes/formsRoutes')
 const branchRoutes = require('./routes/branchRoutes')
 const stocksRoutes = require('./routes/stocksRoutes')
+const announcementRoutes = require('./routes/announcementRoutes')
 const cors = require('cors')
 
 
@@ -37,6 +38,7 @@ app.use('/api/whatsapp', whatsappRoutes)
 app.use('/api/forms', formsRoutes)
 app.use('/api/branches', branchRoutes)
 app.use('/api/stocks', stocksRoutes)
+app.use('/api/announcements', announcementRoutes)
 
 
 const PORT = parseInt(process.env.PORT || '8082', 10)

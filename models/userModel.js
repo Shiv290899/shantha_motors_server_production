@@ -36,7 +36,7 @@ const userSchema = new Schema(
       type: String,
       enum: ROLE_OPTIONS,
       required: true,
-      default: 'user', // set 'staff' if you want branch users by default
+      default: 'staff', // set 'staff' if you want branch users by default
     },
     jobTitle: { type: String, trim: true },
     employeeCode: { type: String, trim: true }, // unique within a primary branch
