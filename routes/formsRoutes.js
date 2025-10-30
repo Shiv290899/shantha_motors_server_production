@@ -325,7 +325,13 @@ router.post('/booking/webhook', async (req, res) => {
       return res.json({ success: true, duplicateSuppressed: true, message: 'Duplicate save suppressed' })
     }
     const httpMethod = (method || 'POST').toUpperCase()
-    const config = { headers: { 'Content-Type': 'application/json', ...(headers || {}) }, validateStatus: () => true }
+    const config = {
+      headers: { 'Content-Type': 'application/json', ...(headers || {}) },
+      validateStatus: () => true,
+      // allow large JSON payloads (e.g., base64 PDF) to pass through
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity,
+    }
     let resp
     if (httpMethod === 'GET') {
       const u = new URL(webhookUrl)
@@ -358,7 +364,12 @@ router.post('/jobcard/webhook', async (req, res) => {
       return res.json({ success: true, duplicateSuppressed: true, message: 'Duplicate save suppressed' })
     }
     const httpMethod = (method || 'POST').toUpperCase()
-    const config = { headers: { 'Content-Type': 'application/json', ...(headers || {}) }, validateStatus: () => true }
+    const config = {
+      headers: { 'Content-Type': 'application/json', ...(headers || {}) },
+      validateStatus: () => true,
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity,
+    }
     let resp
     if (httpMethod === 'GET') {
       const u = new URL(webhookUrl)
