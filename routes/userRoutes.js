@@ -10,7 +10,7 @@ const crypto = require('crypto')
 const { sendMail, isMailConfigured } = require('../utils/mailer')
 
 const JWT_SECRET = process.env.JWT_SECRET
-const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '1d'
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '60d'
 const BCRYPT_SALT_ROUNDS = parseInt(process.env.BCRYPT_SALT_ROUNDS || '10', 10)
 const RESET_TOKEN_EXP_MINUTES = parseInt(process.env.RESET_TOKEN_EXP_MINUTES || '30', 10)
 const APP_URL = (process.env.APP_URL || 'http://localhost:5174').replace(/\/$/, '')

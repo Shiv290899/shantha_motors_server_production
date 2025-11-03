@@ -48,6 +48,7 @@ const allowOrigin = (origin) => {
 app.use(cors({
   origin: (origin, cb) => cb(null, allowOrigin(origin)),
   credentials: corsCredentials,
+  methods: ['GET','HEAD','PUT','PATCH','POST','DELETE','OPTIONS'],
 }))
 
 // Increase body size limit to allow PDF base64 uploads from Booking form

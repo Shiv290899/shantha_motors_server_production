@@ -22,6 +22,20 @@ async function getBranchNameForUser(userId) {
   return null
 }
 
+// Minimal admin/owner guard for destructive actions
+async function requireAdminOwner(req, res, next) {
+  try {
+    const userId = String(req.userId || '')
+    if (!userId || !/^[0-9a-fA-F]{24}$/.test(userId)) return res.status(401).send({ success: false, message: 'Unauthorized' })
+    const u = await User.findById(userId).select('role')
+    const role = String(u?.role || '').toLowerCase()
+    if (role === 'admin' || role === 'owner') return next()
+    return res.status(403).send({ success: false, message: 'Forbidden' })
+  } catch (e) {
+    return res.status(401).send({ success: false, message: 'Unauthorized' })
+  }
+}
+
 // List with optional branch scoping
 // GET /api/stocks?branch=Name&mode=source|target|any
 router.get('/', auth, async (req, res) => {
@@ -133,6 +147,24 @@ async function applyMovementToStock(movement) {
     return null
   } catch (e) {
     console.error('applyMovementToStock failed', e?.message || e)
+    return null
+  }
+}
+
+// Recompute Stock snapshot for a chassis from the latest non-deleted movement
+async function recomputeStockForChassis(chassisNo) {
+  try {
+    const ch = String(chassisNo || '').trim().toUpperCase()
+    if (!ch) return null
+    const latest = await StockMovement.findOne({ chassisNo: ch, deleted: { $ne: true } }).sort({ createdAt: -1 })
+    if (!latest) {
+      // No movement remains, remove snapshot document if present
+      await Stock.deleteOne({ chassisNo: ch })
+      return null
+    }
+    return await applyMovementToStock(latest)
+  } catch (e) {
+    console.error('recomputeStockForChassis failed', e?.message || e)
     return null
   }
 }
@@ -361,7 +393,7 @@ router.post('/', auth, async (req, res) => {
 })
 
 // Update by movementId
-router.patch('/:id', auth, async (req, res) => {
+router.patch('/:id', auth, requireAdminOwner, async (req, res) => {
   try {
     const id = String(req.params.id || '').trim()
     const from = req.body?.data || req.body || {}
@@ -390,12 +422,27 @@ router.patch('/:id', auth, async (req, res) => {
 
     const updated = await StockMovement.findOneAndUpdate({ movementId: id }, patch, { new: true })
     if (!updated) return res.status(404).json({ success: false, message: 'Movement not found' })
-    // Re-apply to stock snapshot in case relevant fields changed
-    await applyMovementToStock(updated)
+    // Recompute based on the actual latest movement for this chassis
+    await recomputeStockForChassis(updated.chassisNo)
     return res.json({ success: true, data: updated })
   } catch (err) {
     console.error('PATCH /stocks/:id failed', err)
     return res.status(500).json({ success: false, message: 'Failed to update stock movement', detail: err.message })
+  }
+})
+
+// Soft-delete a movement and recompute snapshot
+router.delete('/:id', auth, requireAdminOwner, async (req, res) => {
+  try {
+    const id = String(req.params.id || '').trim()
+    if (!id) return res.status(400).json({ success: false, message: 'Invalid id' })
+    const updated = await StockMovement.findOneAndUpdate({ movementId: id }, { deleted: true }, { new: true })
+    if (!updated) return res.status(404).json({ success: false, message: 'Movement not found' })
+    await recomputeStockForChassis(updated.chassisNo)
+    return res.json({ success: true })
+  } catch (err) {
+    console.error('DELETE /stocks/:id failed', err)
+    return res.status(500).json({ success: false, message: 'Failed to delete stock movement', detail: err.message })
   }
 })
 
