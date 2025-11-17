@@ -22,14 +22,14 @@ async function getBranchNameForUser(userId) {
   return null
 }
 
-// Minimal admin/owner guard for destructive actions
+// Minimal admin/owner/backend guard for destructive actions
 async function requireAdminOwner(req, res, next) {
   try {
     const userId = String(req.userId || '')
     if (!userId || !/^[0-9a-fA-F]{24}$/.test(userId)) return res.status(401).send({ success: false, message: 'Unauthorized' })
     const u = await User.findById(userId).select('role')
     const role = String(u?.role || '').toLowerCase()
-    if (role === 'admin' || role === 'owner') return next()
+    if (role === 'admin' || role === 'owner' || role === 'backend') return next()
     return res.status(403).send({ success: false, message: 'Forbidden' })
   } catch (e) {
     return res.status(401).send({ success: false, message: 'Unauthorized' })

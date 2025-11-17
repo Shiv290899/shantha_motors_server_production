@@ -18,7 +18,7 @@ if (!JWT_SECRET && process.env.NODE_ENV !== 'production') {
   console.warn('JWT_SECRET not set; using insecure default for development')
 }
 
-// Minimal admin/owner guard reused across routes
+// Minimal privileged guard (admin/owner/backend) reused across routes
 async function requireAdminOwner(req, res, next) {
   try {
     const userId = String(req.userId || req.body.userId || '')
@@ -29,8 +29,8 @@ async function requireAdminOwner(req, res, next) {
     if (process.env.USER_CRUD_OPEN === 'true') return next()
     const me = await User.findById(userId).select('role')
     const role = String(me?.role || '').toLowerCase()
-    if (role === 'admin' || role === 'owner') return next()
-    return res.status(403).send({ success: false, message: 'Forbidden: admin/owner only' })
+    if (role === 'admin' || role === 'owner' || role === 'backend') return next()
+    return res.status(403).send({ success: false, message: 'Forbidden: admin/owner/backend only' })
   } catch (err) {
     console.error('requireAdminOwner error', err)
     return res.status(401).send({ success: false, message: 'Unauthorized' })

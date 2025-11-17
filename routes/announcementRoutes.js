@@ -4,14 +4,14 @@ const Announcement = require('../models/announcementModel')
 const User = require('../models/userModel')
 const auth = require('../middlewares/authMiddleware')
 
-// Minimal admin/owner guard
+// Minimal admin/owner/backend guard
 async function requireAdminOwner(req, res, next) {
   try {
     const userId = String(req.userId || '')
     if (!userId || !/^[0-9a-fA-F]{24}$/.test(userId)) return res.status(401).send({ success: false, message: 'Unauthorized' })
     const u = await User.findById(userId).select('role')
     const role = String(u?.role || '').toLowerCase()
-    if (role === 'admin' || role === 'owner') return next()
+    if (role === 'admin' || role === 'owner' || role === 'backend') return next()
     return res.status(403).send({ success: false, message: 'Forbidden' })
   } catch (e) {
     return res.status(401).send({ success: false, message: 'Unauthorized' })
@@ -102,4 +102,3 @@ router.delete('/:id', auth, requireAdminOwner, async (req, res) => {
 })
 
 module.exports = router
-

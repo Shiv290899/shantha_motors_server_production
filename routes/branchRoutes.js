@@ -4,7 +4,7 @@ const Branch = require('../models/branchModel')
 const User = require('../models/userModel')
 const auth = require('../middlewares/authMiddleware')
 
-// Simple role guard: only admin or owner may mutate branches
+// Simple role guard: only admin/owner/backend may mutate branches
 async function requireAdmin(req, res, next) {
   try {
     const raw = req.userId || req.body.userId
@@ -23,8 +23,8 @@ async function requireAdmin(req, res, next) {
     }
     const user = await User.findById(userId).select('role')
     const role = String(user?.role || '').toLowerCase()
-    if (role === 'admin' || role === 'owner') return next()
-    return res.status(403).send({ success: false, message: 'Forbidden: admin/owner only' })
+    if (role === 'admin' || role === 'owner' || role === 'backend') return next()
+    return res.status(403).send({ success: false, message: 'Forbidden: admin/owner/backend only' })
   } catch (err) {
     console.error('requireAdmin error', err)
     return res.status(401).send({ success: false, message: 'Unauthorized' })

@@ -9,6 +9,7 @@ const ROLE_OPTIONS = [
   'staff',
   'employees',
   'owner',
+  'backend', // observability/super-viewer role
   'user', // fallback/basic role
 ]
 

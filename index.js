@@ -13,7 +13,6 @@ const express = require('express')
 const app = express()
 const dbConfig = require('./config/dbConfig')
 const userRoutes = require('./routes/userRoutes')
-const whatsappRoutes = require('./routes/whatsappRoutes')
 const formsRoutes = require('./routes/formsRoutes')
 const branchRoutes = require('./routes/branchRoutes')
 const stocksRoutes = require('./routes/stocksRoutes')
@@ -60,11 +59,12 @@ app.use(express.urlencoded({ extended: true, limit: bodyLimit }))
 app.get('/', (req, res) => res.status(200).send('OK'))
 app.get('/healthz', (req, res) => res.status(200).json({ status: 'ok' }))
 app.use('/api/users', userRoutes)
-app.use('/api/whatsapp', whatsappRoutes)
+
 app.use('/api/forms', formsRoutes)
 app.use('/api/branches', branchRoutes)
 app.use('/api/stocks', stocksRoutes)
 app.use('/api/announcements', announcementRoutes)
+
 
 
 const PORT = parseInt(process.env.PORT || '8082', 10)
