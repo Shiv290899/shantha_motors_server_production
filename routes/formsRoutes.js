@@ -282,6 +282,29 @@ router.post('/booking', async (req, res) => {
 const IDEMPOTENCY_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const recentSerials = new Map(); // key -> timestamp
 
+// Lightweight cache for GET webhook proxy responses to reduce perceived latency
+// Especially useful for staff/account views that poll frequently.
+const WEBHOOK_CACHE = new Map(); // key -> { t:number, data:any }
+const CACHE_TTL_MS = 8 * 1000; // 8s TTL (short, safe for near‑real‑time)
+function cacheKey(webhookUrl, payload){
+  try { return `${webhookUrl}|${JSON.stringify(payload||{})}` } catch { return String(webhookUrl||'') }
+}
+function cacheGet(webhookUrl, payload){
+  const k = cacheKey(webhookUrl, payload)
+  const e = WEBHOOK_CACHE.get(k)
+  if (e && (Date.now() - e.t) < CACHE_TTL_MS) return e.data
+  if (e) WEBHOOK_CACHE.delete(k)
+  return null
+}
+function cachePut(webhookUrl, payload, data){
+  const k = cacheKey(webhookUrl, payload)
+  WEBHOOK_CACHE.set(k, { t: Date.now(), data })
+  if (WEBHOOK_CACHE.size > 500) {
+    const arr = Array.from(WEBHOOK_CACHE.entries()).sort((a,b)=>a[1].t-b[1].t).slice(0,50)
+    for (const [kk] of arr) WEBHOOK_CACHE.delete(kk)
+  }
+}
+
 function extractSerial(obj) {
   try {
     if (!obj) return null;
@@ -334,6 +357,8 @@ router.post('/booking/webhook', async (req, res) => {
     }
     let resp
     if (httpMethod === 'GET') {
+      const cached = cacheGet(webhookUrl, payload)
+      if (cached) return res.json({ success: true, forwarded: true, status: 200, data: cached })
       const u = new URL(webhookUrl)
       Object.entries(payload || {}).forEach(([k, v]) => u.searchParams.append(k, String(v)))
       resp = await axios.get(u.toString(), config)
@@ -342,6 +367,7 @@ router.post('/booking/webhook', async (req, res) => {
     }
     if (String(resp.status).startsWith('2')) {
       if (serialKey) markSerial(serialKey)
+      if (httpMethod === 'GET') cachePut(webhookUrl, payload, resp.data)
       return res.json({ success: true, forwarded: true, status: resp.status, data: resp.data })
     }
     return res.status(502).json({ success: false, message: 'Webhook call failed', status: resp.status, data: resp.data })
@@ -372,6 +398,8 @@ router.post('/jobcard/webhook', async (req, res) => {
     }
     let resp
     if (httpMethod === 'GET') {
+      const cached = cacheGet(webhookUrl, payload)
+      if (cached) return res.json({ success: true, forwarded: true, status: 200, data: cached })
       const u = new URL(webhookUrl)
       Object.entries(payload || {}).forEach(([k, v]) => u.searchParams.append(k, String(v)))
       resp = await axios.get(u.toString(), config)
@@ -380,6 +408,7 @@ router.post('/jobcard/webhook', async (req, res) => {
     }
     if (String(resp.status).startsWith('2')) {
       if (serialKey) markSerial(serialKey)
+      if (httpMethod === 'GET') cachePut(webhookUrl, payload, resp.data)
       return res.json({ success: true, forwarded: true, status: resp.status, data: resp.data })
     }
     return res.status(502).json({ success: false, message: 'Webhook call failed', status: resp.status, data: resp.data })
