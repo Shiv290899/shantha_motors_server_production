@@ -56,7 +56,7 @@ router.get('/', auth, async (req, res) => {
     }
 
     // Simple pagination params
-    const limit = Math.min(Math.max(parseInt(req.query.limit || '200', 10), 1), 1000)
+    const limit = Math.min(Math.max(parseInt(req.query.limit || '1000', 10), 1), 1000)
     const page = Math.max(parseInt(req.query.page || '1', 10), 1)
     const skip = (page - 1) * limit
 
@@ -461,7 +461,7 @@ router.get('/public', async (req, res) => {
       else filter.$or = [{ sourceBranchKey: branchKey }, { targetBranchKey: branchKey }]
     }
 
-    const limit = Math.min(Math.max(parseInt(req.query.limit || '200', 10), 1), 1000)
+    const limit = Math.min(Math.max(parseInt(req.query.limit || '1000', 10), 1), 1000)
     const page = Math.max(parseInt(req.query.page || '1', 10), 1)
     const skip = (page - 1) * limit
 
