@@ -25,6 +25,7 @@ const stockMovementSchema = new Schema(
     returnTo: { type: String, trim: true },
     customerName: { type: String, trim: true },
     sourceBranch: { type: String, trim: true },
+    transferStatus: { type: String, enum: ['pending', 'admitted', 'rejected', 'completed'], default: 'completed', index: true },
 
     // Normalized keys for faster, case-insensitive matching
     sourceBranchKey: { type: String, index: true },
@@ -34,6 +35,9 @@ const stockMovementSchema = new Schema(
     notes: { type: String, trim: true },
     createdByName: { type: String, trim: true },
     createdBy: { type: Schema.Types.ObjectId, ref: 'User' },
+    resolvedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+    resolvedByName: { type: String, trim: true },
+    resolvedAt: { type: Date },
     timestamp: { type: Date, default: Date.now },
     deleted: { type: Boolean, default: false, index: true },
   },

@@ -5,11 +5,14 @@ const User = require('../models/userModel')
 const StockMovement = require('../models/stockMovementModel')
 const Stock = require('../models/stockModel')
 const { v4: uuidv4 } = require('uuid')
+const jwt = require('jsonwebtoken')
 
 const normalize = (s) => String(s || '')
   .toLowerCase()
   .normalize('NFKD')
   .replace(/[^a-z0-9]/g, '')
+
+const JWT_SECRET = process.env.JWT_SECRET
 
 async function getBranchNameForUser(userId) {
   const user = await User.findById(userId)
@@ -20,6 +23,50 @@ async function getBranchNameForUser(userId) {
   if (user.primaryBranch?.name) return user.primaryBranch.name
   if (Array.isArray(user.branches) && user.branches[0]?.name) return user.branches[0].name
   return null
+}
+
+// Lightweight token resolver for endpoints that want to be lenient (e.g., pending transfer alerts)
+function tryPickToken(req) {
+  const header = req.headers.authorization || req.headers.Authorization || ''
+  let token = ''
+  if (typeof header === 'string' && header.length > 0) {
+    const m = header.match(/^\s*Bearer\s+(.+)$/i)
+    if (m && m[1]) token = m[1].trim()
+    else if (header.length > 20) {
+      const parts = header.trim().split(/\s+/)
+      token = parts.length > 1 ? parts[parts.length - 1] : parts[0]
+    }
+  }
+  if (!token && req.query && typeof req.query.token === 'string') token = String(req.query.token).trim()
+  if (!token && req.query && typeof req.query.tokenkey === 'string') token = String(req.query.tokenkey).trim()
+  if (!token && req.body && typeof req.body.token === 'string') token = String(req.body.token).trim()
+  if (!token && req.body && typeof req.body.tokenkey === 'string') token = String(req.body.tokenkey).trim()
+  return token || null
+}
+
+function tryVerifyToken(rawToken) {
+  if (!rawToken) return null
+  try {
+    return jwt.verify(rawToken, JWT_SECRET || 'shantha_motors')
+  } catch (e) {
+    if (JWT_SECRET && JWT_SECRET !== 'shantha_motors') {
+      try { return jwt.verify(rawToken, 'shantha_motors') } catch (_) {}
+    }
+  }
+  return null
+}
+
+async function resolveUserOptional(req) {
+  const token = tryPickToken(req)
+  const verified = tryVerifyToken(token)
+  if (!verified?.userId) return null
+  try {
+    const user = await User.findById(verified.userId).select('role name email primaryBranch branches')
+    if (!user) return null
+    return { userId: user._id, role: String(user.role || '').toLowerCase(), name: user.name || user.email || '', user }
+  } catch {
+    return null
+  }
 }
 
 // Minimal admin/owner/backend guard for destructive actions
@@ -74,8 +121,13 @@ router.get('/', auth, async (req, res) => {
 
 function deriveCurrentBranch(m) {
   const act = String(m?.action || '').toLowerCase()
+  const transferStatus = String(m?.transferStatus || 'completed').toLowerCase()
+  const transferAdmitted = transferStatus === 'admitted' || transferStatus === 'completed'
   if (act === 'add') return m.sourceBranch || null
-  if (act === 'transfer') return m.targetBranch || null
+  if (act === 'transfer') {
+    if (!transferAdmitted) return m.sourceBranch || null
+    return m.targetBranch || null
+  }
   if (act === 'return' || act === 'invoice') return null
   return null
 }
@@ -110,12 +162,18 @@ async function applyMovementToStock(movement) {
     }
 
     if (act === 'transfer') {
-      // Move stock to targetBranch; keep previous for UI
+      // Move stock to targetBranch after admit; keep in source while pending/rejected
+      const transferStatus = String(movement?.transferStatus || 'completed').toLowerCase()
+      const transferAdmitted = transferStatus === 'admitted' || transferStatus === 'completed'
       const existing = await Stock.findOne({ chassisNo })
       const prevBranch = existing?.sourceBranch || movement.sourceBranch || ''
+      const stayBranch = movement.sourceBranch || prevBranch
+      const nextBranch = transferAdmitted
+        ? (movement.targetBranch || existing?.sourceBranch || '')
+        : stayBranch
       const update = {
         ...baseVehicle,
-        sourceBranch: movement.targetBranch || existing?.sourceBranch || '',
+        sourceBranch: nextBranch,
         lastSourceBranch: prevBranch,
         status: 'in_stock',
         lastMovementId: movement.movementId,
@@ -218,6 +276,9 @@ router.get('/current', auth, async (req, res) => {
             notes: m.notes || undefined,
             timestamp: m.timestamp || undefined,
             movementId: m.movementId || undefined,
+            transferStatus: m.transferStatus || 'completed',
+            resolvedByName: m.resolvedByName || undefined,
+            resolvedAt: m.resolvedAt || undefined,
           }
         })
       }
@@ -270,6 +331,9 @@ router.get('/current/public', async (req, res) => {
             notes: m.notes || undefined,
             timestamp: m.timestamp || undefined,
             movementId: m.movementId || undefined,
+            transferStatus: m.transferStatus || 'completed',
+            resolvedByName: m.resolvedByName || undefined,
+            resolvedAt: m.resolvedAt || undefined,
           }
         })
       }
@@ -279,6 +343,33 @@ router.get('/current/public', async (req, res) => {
   } catch (err) {
     console.error('GET /stocks/current/public failed', err)
     return res.status(500).json({ success: false, message: 'Failed to fetch current stock', detail: err.message })
+  }
+})
+
+// Pending transfer notifications for target branch users
+router.get('/transfers/pending', async (req, res) => {
+  try {
+    const resolved = await resolveUserOptional(req)
+    const role = String(resolved?.role || '').toLowerCase()
+    const allowAll = ['admin', 'owner', 'backend'].includes(role)
+    let branchName = String(req.query.branch || '').trim()
+    const wantsAll = allowAll && branchName.toLowerCase() === 'all'
+    if (!branchName || (!allowAll && branchName.toLowerCase() === 'all')) {
+      branchName = resolved ? await getBranchNameForUser(resolved.userId) : ''
+    }
+    const branchKey = normalize(branchName)
+    const filter = { action: 'transfer', transferStatus: 'pending', deleted: { $ne: true } }
+    if (!wantsAll) {
+      if (branchKey) filter.targetBranchKey = branchKey
+      else return res.status(400).json({ success: false, message: 'Branch is required for pending transfers' })
+    }
+
+    const limit = Math.min(Math.max(parseInt(req.query.limit || '500', 10), 1), 1000)
+    const items = await StockMovement.find(filter).sort({ createdAt: 1 }).limit(limit)
+    return res.json({ success: true, count: items.length, branch: wantsAll ? 'all' : (branchName || null), role: role || 'guest', data: items })
+  } catch (err) {
+    console.error('GET /stocks/transfers/pending failed', err)
+    return res.status(500).json({ success: false, message: 'Failed to fetch pending transfers', detail: err.message })
   }
 })
 
@@ -309,6 +400,10 @@ router.post('/', auth, async (req, res) => {
       createdByName,
       createdBy: req.userId,
       timestamp: new Date(),
+      transferStatus: 'completed',
+      resolvedBy: null,
+      resolvedByName: null,
+      resolvedAt: null,
       deleted: false,
     }
 
@@ -380,6 +475,18 @@ router.post('/', auth, async (req, res) => {
       if (payload.sourceBranch && payload.targetBranch && payload.sourceBranch === payload.targetBranch) {
         return res.status(400).json({ success: false, message: 'Source and target branch cannot be the same' })
       }
+      payload.transferStatus = 'pending'
+      const existingPending = await StockMovement.findOne({
+        chassisNo: payload.chassisNo,
+        action: 'transfer',
+        transferStatus: 'pending',
+        deleted: { $ne: true },
+      })
+      if (existingPending) {
+        return res.status(409).json({ success: false, message: 'A pending transfer already exists for this chassis' })
+      }
+    } else {
+      payload.transferStatus = 'completed'
     }
 
     const created = await StockMovement.create(payload)
@@ -389,6 +496,84 @@ router.post('/', auth, async (req, res) => {
   } catch (err) {
     console.error('POST /stocks failed', err)
     return res.status(500).json({ success: false, message: 'Failed to create stock movement', detail: err.message })
+  }
+})
+
+// Admit a pending transfer into the target branch
+router.post('/:id/admit', auth, async (req, res) => {
+  try {
+    const id = String(req.params.id || '').trim()
+    if (!id) return res.status(400).json({ success: false, message: 'Invalid id' })
+    const me = await User.findById(req.userId).select('role name email')
+    const role = String(me?.role || '').toLowerCase()
+    const isPriv = ['admin', 'owner', 'backend'].includes(role)
+    const userBranch = await getBranchNameForUser(req.userId)
+
+    const movement = await StockMovement.findOne({ movementId: id, deleted: { $ne: true } })
+    if (!movement || movement.action !== 'transfer') {
+      return res.status(404).json({ success: false, message: 'Transfer not found' })
+    }
+    if (String(movement.transferStatus || 'completed').toLowerCase() !== 'pending') {
+      return res.status(400).json({ success: false, message: 'Transfer already resolved' })
+    }
+
+    const targetKey = normalize(movement.targetBranch)
+    const userBranchKey = normalize(userBranch)
+    if (!isPriv && (!userBranchKey || userBranchKey !== targetKey)) {
+      return res.status(403).json({ success: false, message: 'Not authorized to admit for this branch' })
+    }
+
+    movement.transferStatus = 'admitted'
+    movement.resolvedAt = new Date()
+    movement.resolvedBy = req.userId
+    movement.resolvedByName = me?.name || me?.email || 'user'
+    const note = String(req.body?.notes || '').trim()
+    if (note) movement.notes = movement.notes ? `${movement.notes} | Admit: ${note}` : `Admit: ${note}`
+    await movement.save()
+    await applyMovementToStock(movement)
+    return res.json({ success: true, data: movement })
+  } catch (err) {
+    console.error('POST /stocks/:id/admit failed', err)
+    return res.status(500).json({ success: false, message: 'Failed to admit transfer', detail: err.message })
+  }
+})
+
+// Reject a pending transfer (keeps stock in source branch)
+router.post('/:id/reject', auth, async (req, res) => {
+  try {
+    const id = String(req.params.id || '').trim()
+    if (!id) return res.status(400).json({ success: false, message: 'Invalid id' })
+    const me = await User.findById(req.userId).select('role name email')
+    const role = String(me?.role || '').toLowerCase()
+    const isPriv = ['admin', 'owner', 'backend'].includes(role)
+    const userBranch = await getBranchNameForUser(req.userId)
+
+    const movement = await StockMovement.findOne({ movementId: id, deleted: { $ne: true } })
+    if (!movement || movement.action !== 'transfer') {
+      return res.status(404).json({ success: false, message: 'Transfer not found' })
+    }
+    if (String(movement.transferStatus || 'completed').toLowerCase() !== 'pending') {
+      return res.status(400).json({ success: false, message: 'Transfer already resolved' })
+    }
+
+    const targetKey = normalize(movement.targetBranch)
+    const userBranchKey = normalize(userBranch)
+    if (!isPriv && (!userBranchKey || userBranchKey !== targetKey)) {
+      return res.status(403).json({ success: false, message: 'Not authorized to reject for this branch' })
+    }
+
+    movement.transferStatus = 'rejected'
+    movement.resolvedAt = new Date()
+    movement.resolvedBy = req.userId
+    movement.resolvedByName = me?.name || me?.email || 'user'
+    const reason = String(req.body?.reason || req.body?.notes || '').trim()
+    if (reason) movement.notes = movement.notes ? `${movement.notes} | Reject: ${reason}` : `Reject: ${reason}`
+    await movement.save()
+    await applyMovementToStock(movement)
+    return res.json({ success: true, data: movement })
+  } catch (err) {
+    console.error('POST /stocks/:id/reject failed', err)
+    return res.status(500).json({ success: false, message: 'Failed to reject transfer', detail: err.message })
   }
 })
 
@@ -411,6 +596,11 @@ router.patch('/:id', auth, requireAdminOwner, async (req, res) => {
       Source_Branch: 'sourceBranch',
       Notes: 'notes',
       movementId: 'movementId',
+      Transfer_Status: 'transferStatus',
+      transferStatus: 'transferStatus',
+      resolvedBy: 'resolvedBy',
+      resolvedByName: 'resolvedByName',
+      resolvedAt: 'resolvedAt',
     }
     Object.entries(map).forEach(([k, v]) => {
       const val = from[k] ?? from[v]
