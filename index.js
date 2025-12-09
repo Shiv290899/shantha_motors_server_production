@@ -16,6 +16,7 @@ const userRoutes = require('./routes/userRoutes')
 const formsRoutes = require('./routes/formsRoutes')
 const branchRoutes = require('./routes/branchRoutes')
 const stocksRoutes = require('./routes/stocksRoutes')
+const stocksGasProxyRoutes = require('./routes/stocksGasProxy')
 const announcementRoutes = require('./routes/announcementRoutes')
 const cors = require('cors')
 
@@ -63,6 +64,7 @@ app.use('/api/users', userRoutes)
 app.use('/api/forms', formsRoutes)
 app.use('/api/branches', branchRoutes)
 app.use('/api/stocks', stocksRoutes)
+app.use('/api/stocks/gas', stocksGasProxyRoutes)
 app.use('/api/announcements', announcementRoutes)
 
 
