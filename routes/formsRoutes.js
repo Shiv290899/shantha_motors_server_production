@@ -418,6 +418,6 @@ router.post('/jobcard/webhook', async (req, res) => {
   }
 })
 
-// Note: Stock movements are now stored in MongoDB (/api/stocks). Google Form relay removed.
+// Note: Stock movements are handled via the GAS proxy (/api/stocks/gas). MongoDB stock routes were removed.
 
 module.exports = router
