@@ -4,7 +4,7 @@ const axios = require('axios')
 const router = express.Router()
 
 // Point this to your deployed Apps Script Web App URL
-const GAS_URL = process.env.STOCKS_GAS_URL || 'https://script.google.com/macros/s/AKfycbxC6Rufh7of5iqGTI9BYOg4XcuQcup-fAaU4QndOp5a-BoR9pYxHB6r7ZHLh9IVlBbkpg/exec'
+const GAS_URL = process.env.STOCKS_GAS_URL || 'https://script.google.com/macros/s/AKfycbzWT7aSLTZl-qW2peDaHMcsW_aA55ttVfheZThFfYpj7sMm09Mg_6Gp2xjc7Z0XNHmwpw/exec'
 
 // GET proxy (list/current/pending)
 router.get('/', async (req, res) => {
