@@ -221,7 +221,19 @@ router.post('/jobcard/serial/reserve', async (req, res) => {
     }
     if (!m10) return res.status(400).json({ success: false, message: 'Valid 10-digit mobile is required' })
     if (!bc) return res.status(400).json({ success: false, message: 'branchCode is required' })
-    const serial = buildSerial('jobcard', bc)
+    const csvUrl = process.env.JOBCARD_RESPONSES_CSV_URL || process.env.JOBCARD_SHEET_CSV_URL
+    let serial = buildSerial('jobcard', bc)
+    if (csvUrl) {
+      for (let i = 0; i < 3; i++) {
+        try {
+          // Re-roll if the serial already exists in the sheet.
+          if (!(await serialExistsInCsv(csvUrl, serial, 'jobcard'))) break
+          serial = buildSerial('jobcard', bc)
+        } catch {
+          break
+        }
+      }
+    }
     return res.json({ success: true, serial })
   } catch (error) {
     console.error('Failed to reserve jobcard serial:', error)
@@ -310,9 +322,13 @@ function extractSerial(obj) {
     if (!obj) return null;
     // common shapes from client: { action:'save', data:{ serialNo, formValues, payload } }
     if (obj.data?.serialNo) return String(obj.data.serialNo);
+    if (obj.data?.jcNo) return String(obj.data.jcNo);
     if (obj.serialNo) return String(obj.serialNo);
+    if (obj.jcNo) return String(obj.jcNo);
     if (obj.formValues?.serialNo) return String(obj.formValues.serialNo);
+    if (obj.formValues?.jcNo) return String(obj.formValues.jcNo);
     if (obj.payload?.formValues?.serialNo) return String(obj.payload.formValues.serialNo);
+    if (obj.payload?.formValues?.jcNo) return String(obj.payload.formValues.jcNo);
   } catch {}
   return null;
 }
