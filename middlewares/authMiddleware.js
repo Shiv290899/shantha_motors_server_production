@@ -1,12 +1,14 @@
 const jwt = require('jsonwebtoken')
+const User = require('../models/userModel')
 
 const JWT_SECRET = process.env.JWT_SECRET
 if (!JWT_SECRET && process.env.NODE_ENV !== 'production') {
   console.warn('JWT_SECRET not set; using insecure default for development')
 }
 
-module.exports = function (req, res, next) {
+module.exports = async function (req, res, next) {
   try {
+    const isDev = process.env.NODE_ENV !== 'production'
     const header = req.headers.authorization || req.headers.Authorization || ''
     let token = ''
     if (typeof header === 'string' && header.length > 0) {
@@ -48,12 +50,37 @@ module.exports = function (req, res, next) {
       }
     }
     if (!verifiedToken) throw new Error('Invalid token')
+
+    const userId = verifiedToken.userId
+    if (!userId) throw new Error('Invalid token')
+    const user = await User.findById(userId).select('tokenInvalidAfter')
+    if (!user) throw new Error('User not found')
+    if (user.tokenInvalidAfter && typeof verifiedToken.iat === 'number') {
+      const invalidAfterMs = new Date(user.tokenInvalidAfter).getTime()
+      if (!Number.isNaN(invalidAfterMs)) {
+        const invalidAfterSec = Math.floor(invalidAfterMs / 1000)
+        if (verifiedToken.iat < invalidAfterSec) {
+          return res.status(401).send(isDev
+            ? { success: false, message: 'Token Invalid', reason: 'Token revoked' }
+            : { success: false, message: 'Token Invalid' }
+          )
+        }
+      }
+    }
     // Attach userId in a safe place (do not rely only on body)
     req.userId = verifiedToken.userId
     // Keep legacy behavior for existing routes that expect it in body
+    if (!req.body || typeof req.body !== 'object') req.body = {}
     req.body.userId = verifiedToken.userId
     next()
   } catch (error) {
-    res.status(401).send({ success: false, message: 'Token Invalid' })
+    const isDev = process.env.NODE_ENV !== 'production'
+    if (isDev) {
+      console.warn('authMiddleware', error?.message || error)
+    }
+    res.status(401).send(isDev
+      ? { success: false, message: 'Token Invalid', reason: error?.message || 'Unauthorized' }
+      : { success: false, message: 'Token Invalid' }
+    )
   }
 }

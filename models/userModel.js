@@ -51,6 +51,7 @@ const userSchema = new Schema(
     // Operational
     status: { type: String, enum: STATUS_OPTIONS, default: 'active' },
     lastLoginAt: { type: Date },
+    tokenInvalidAfter: { type: Date },
     metadata: { type: Schema.Types.Mixed },
   },
   { timestamps: true }

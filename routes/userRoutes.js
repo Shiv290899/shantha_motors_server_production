@@ -139,8 +139,13 @@ router.post('/login', async (req, res) => {
       expiresIn: JWT_EXPIRES_IN,
     })
 
-    // Update last login timestamp (for dashboard visibility)
-    try { await User.updateOne({ _id: user._id }, { $set: { lastLoginAt: new Date() } }) } catch { /* non-blocking */ }
+    // Update last login timestamp (for dashboard visibility) and clear any forced logout flag
+    try {
+      await User.updateOne(
+        { _id: user._id },
+        { $set: { lastLoginAt: new Date() }, $unset: { tokenInvalidAfter: 1 } }
+      )
+    } catch { /* non-blocking */ }
 
     // Enrich the user payload so the client can render branch/name immediately without a second fetch
     const userDoc = await User.findById(user._id)
@@ -480,6 +485,27 @@ router.put('/:id', authMiddleware, requireAdminOwner, async (req, res) => {
     }
     console.error('PUT /users/:id failed', err)
     return res.status(500).json({ success: false, message: 'Failed to update user' })
+  }
+})
+
+// Admin force logout (invalidate tokens)
+router.post('/:id/force-logout', authMiddleware, requireAdminOwner, async (req, res) => {
+  try {
+    const id = String(req.params.id || '')
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ success: false, message: 'Invalid user id' })
+    }
+    const now = new Date()
+    const updated = await User.findByIdAndUpdate(
+      id,
+      { $set: { tokenInvalidAfter: now } },
+      { new: true }
+    )
+    if (!updated) return res.status(404).json({ success: false, message: 'User not found' })
+    return res.json({ success: true, message: 'User will be logged out shortly.' })
+  } catch (err) {
+    console.error('POST /users/:id/force-logout failed', err)
+    return res.status(500).json({ success: false, message: 'Failed to force logout user' })
   }
 })
 
