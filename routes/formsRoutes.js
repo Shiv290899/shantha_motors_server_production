@@ -317,6 +317,48 @@ function cachePut(webhookUrl, payload, data){
   }
 }
 
+function extractRowsFromWebhookData(data) {
+  if (!data) return []
+  if (Array.isArray(data)) return data
+  if (Array.isArray(data.rows)) return data.rows
+  if (Array.isArray(data.data)) return data.data
+  return []
+}
+
+function extractTotalFromWebhookData(data) {
+  if (!data || typeof data !== 'object') return null
+  const keys = ['total', 'count', 'totalRows', 'totalCount']
+  for (const key of keys) {
+    const n = Number(data[key])
+    if (Number.isFinite(n) && n >= 0) return n
+  }
+  if (data.meta && typeof data.meta === 'object') {
+    for (const key of keys) {
+      const n = Number(data.meta[key])
+      if (Number.isFinite(n) && n >= 0) return n
+    }
+  }
+  return null
+}
+
+function mergeRowsIntoWebhookData(data, rows) {
+  const out = (data && typeof data === 'object' && !Array.isArray(data))
+    ? { ...data }
+    : {}
+  if (Array.isArray(data)) return rows
+  if (Array.isArray(out.rows)) out.rows = rows
+  else if (Array.isArray(out.data)) out.data = rows
+  else out.rows = rows
+  const total = rows.length
+  if ('total' in out || out.total === undefined) out.total = total
+  if ('count' in out) out.count = total
+  if ('totalRows' in out) out.totalRows = total
+  if ('totalCount' in out) out.totalCount = total
+  if ('page' in out) out.page = 1
+  if ('pageNo' in out) out.pageNo = 1
+  return out
+}
+
 function extractSerial(obj) {
   try {
     if (!obj) return null;
@@ -378,9 +420,55 @@ router.post('/booking/webhook', async (req, res) => {
     if (httpMethod === 'GET') {
       const cached = cacheGet(webhookUrl, payload)
       if (cached) return res.json({ success: true, forwarded: true, status: 200, data: cached })
-      const u = new URL(webhookUrl)
-      Object.entries(payload || {}).forEach(([k, v]) => u.searchParams.append(k, String(v)))
-      resp = await axios.get(u.toString(), config)
+      const getPage = async (pagePayload) => {
+        const pageCached = cacheGet(webhookUrl, pagePayload)
+        if (pageCached) return pageCached
+        const u = new URL(webhookUrl)
+        Object.entries(pagePayload || {}).forEach(([k, v]) => u.searchParams.append(k, String(v)))
+        const pageResp = await axios.get(u.toString(), config)
+        if (!String(pageResp.status).startsWith('2')) {
+          const err = new Error(`Webhook call failed with status ${pageResp.status}`)
+          err.status = pageResp.status
+          err.data = pageResp.data
+          throw err
+        }
+        cachePut(webhookUrl, pagePayload, pageResp.data)
+        return pageResp.data
+      }
+
+      const requestedPage = Math.max(parseInt(payload?.page || '1', 10) || 1, 1)
+      const requestedPageSize = Math.max(parseInt(payload?.pageSize || payload?.pagesize || '0', 10) || 0, 0)
+      const shouldAutoPaginate = action === 'list' && requestedPage === 1 && requestedPageSize > 100
+
+      if (!shouldAutoPaginate) {
+        const data = await getPage(payload || {})
+        return res.json({ success: true, forwarded: true, status: 200, data })
+      }
+
+      const basePayload = { ...(payload || {}) }
+      let page = 1
+      let allRows = []
+      let firstData = null
+      let total = null
+      const MAX_PAGES = Math.max(1, Math.ceil(requestedPageSize / 100))
+
+      while (page <= MAX_PAGES && allRows.length < requestedPageSize) {
+        const pagePayload = { ...basePayload, page }
+        const pageData = await getPage(pagePayload)
+        if (page === 1) firstData = pageData
+        if (total === null) total = extractTotalFromWebhookData(pageData)
+        const pageRows = extractRowsFromWebhookData(pageData)
+        if (!pageRows.length) break
+        allRows = allRows.concat(pageRows)
+        if (total !== null && allRows.length >= total) break
+        if (pageRows.length < 100) break
+        page += 1
+      }
+
+      if (allRows.length > requestedPageSize) allRows = allRows.slice(0, requestedPageSize)
+      const merged = mergeRowsIntoWebhookData(firstData, allRows)
+      cachePut(webhookUrl, payload, merged)
+      return res.json({ success: true, forwarded: true, status: 200, data: merged })
     } else {
       resp = await axios.post(webhookUrl, payload || {}, config)
     }
@@ -425,9 +513,55 @@ router.post('/jobcard/webhook', async (req, res) => {
     if (httpMethod === 'GET') {
       const cached = cacheGet(webhookUrl, payload)
       if (cached) return res.json({ success: true, forwarded: true, status: 200, data: cached })
-      const u = new URL(webhookUrl)
-      Object.entries(payload || {}).forEach(([k, v]) => u.searchParams.append(k, String(v)))
-      resp = await axios.get(u.toString(), config)
+      const getPage = async (pagePayload) => {
+        const pageCached = cacheGet(webhookUrl, pagePayload)
+        if (pageCached) return pageCached
+        const u = new URL(webhookUrl)
+        Object.entries(pagePayload || {}).forEach(([k, v]) => u.searchParams.append(k, String(v)))
+        const pageResp = await axios.get(u.toString(), config)
+        if (!String(pageResp.status).startsWith('2')) {
+          const err = new Error(`Webhook call failed with status ${pageResp.status}`)
+          err.status = pageResp.status
+          err.data = pageResp.data
+          throw err
+        }
+        cachePut(webhookUrl, pagePayload, pageResp.data)
+        return pageResp.data
+      }
+
+      const requestedPage = Math.max(parseInt(payload?.page || '1', 10) || 1, 1)
+      const requestedPageSize = Math.max(parseInt(payload?.pageSize || payload?.pagesize || '0', 10) || 0, 0)
+      const shouldAutoPaginate = action === 'list' && requestedPage === 1 && requestedPageSize > 100
+
+      if (!shouldAutoPaginate) {
+        const data = await getPage(payload || {})
+        return res.json({ success: true, forwarded: true, status: 200, data })
+      }
+
+      const basePayload = { ...(payload || {}) }
+      let page = 1
+      let allRows = []
+      let firstData = null
+      let total = null
+      const MAX_PAGES = Math.max(1, Math.ceil(requestedPageSize / 100))
+
+      while (page <= MAX_PAGES && allRows.length < requestedPageSize) {
+        const pagePayload = { ...basePayload, page }
+        const pageData = await getPage(pagePayload)
+        if (page === 1) firstData = pageData
+        if (total === null) total = extractTotalFromWebhookData(pageData)
+        const pageRows = extractRowsFromWebhookData(pageData)
+        if (!pageRows.length) break
+        allRows = allRows.concat(pageRows)
+        if (total !== null && allRows.length >= total) break
+        if (pageRows.length < 100) break
+        page += 1
+      }
+
+      if (allRows.length > requestedPageSize) allRows = allRows.slice(0, requestedPageSize)
+      const merged = mergeRowsIntoWebhookData(firstData, allRows)
+      cachePut(webhookUrl, payload, merged)
+      return res.json({ success: true, forwarded: true, status: 200, data: merged })
     } else {
       resp = await axios.post(webhookUrl, payload || {}, config)
     }
