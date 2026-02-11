@@ -5,6 +5,7 @@ const router = express.Router()
 
 // Point this to your deployed Apps Script Web App URL
 const GAS_URL = process.env.STOCKS_GAS_URL || 'https://script.google.com/macros/s/AKfycbzWT7aSLTZl-qW2peDaHMcsW_aA55ttVfheZThFfYpj7sMm09Mg_6Gp2xjc7Z0XNHmwpw/exec'
+const upper = (v) => String(v || '').trim().toUpperCase()
 
 // GET proxy (list/current/pending)
 router.get('/', async (req, res) => {
@@ -24,7 +25,41 @@ router.post('/', async (req, res) => {
   try {
     const payload = req.body || {}
     if (!payload.action) payload.action = 'create'
-    const { data } = await axios.post(GAS_URL, payload)
+    let { data } = await axios.post(GAS_URL, payload)
+
+    // Fallback for stale movement IDs:
+    // if update fails with "Movement not found", resolve latest movement by chassis and retry once.
+    const isUpdate = String(payload.action || '').toLowerCase() === 'update'
+    const notFound = /movement not found/i.test(String(data?.message || ''))
+    const chassisNo = upper(payload?.data?.chassisNo || payload?.data?.Chassis_No)
+    const attemptedId = String(payload?.movementId || payload?.id || '').trim()
+    if (isUpdate && data?.ok === false && notFound && chassisNo) {
+      let fallbackId = ''
+      try {
+        const current = await axios.get(GAS_URL, { params: { action: 'current', limit: 3000, page: 1 } })
+        const currentRows = Array.isArray(current?.data?.data) ? current.data.data : []
+        const snap = currentRows.find((r) => upper(r?.chassisNo || r?.Chassis_No) === chassisNo)
+        fallbackId = String(snap?.lastMovementId || snap?.movementId || '').trim()
+      } catch (_) {
+        // ignore and continue to next fallback
+      }
+      if (!fallbackId) {
+        try {
+          const list = await axios.get(GAS_URL, { params: { action: 'list', limit: 3000, page: 1 } })
+          const listRows = Array.isArray(list?.data?.data) ? list.data.data : []
+          const mv = listRows.find((r) => upper(r?.chassisNo || r?.Chassis_No) === chassisNo)
+          fallbackId = String(mv?.movementId || mv?.MovementId || '').trim()
+        } catch (_) {
+          // ignore and return original response
+        }
+      }
+      if (fallbackId && fallbackId !== attemptedId) {
+        const retryPayload = { ...payload, movementId: fallbackId }
+        const retry = await axios.post(GAS_URL, retryPayload)
+        data = retry?.data || data
+      }
+    }
+
     return res.json(data)
   } catch (err) {
     const status = err?.response?.status || 500
