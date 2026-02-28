@@ -610,7 +610,4 @@ router.post('/jobcard/webhook', async (req, res) => {
     return res.status(500).json({ success: false, message: 'Failed to post to webhook.', detail: error.message })
   }
 })
-
-// Note: Stock movements are handled via the GAS proxy (/api/stocks/gas). MongoDB stock routes were removed.
-
 module.exports = router
