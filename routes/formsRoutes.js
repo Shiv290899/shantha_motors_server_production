@@ -359,6 +359,33 @@ function mergeRowsIntoWebhookData(data, rows) {
   return out
 }
 
+function stripHeavyFieldsFromRow(row) {
+  if (!row || typeof row !== 'object') return row
+  const out = { ...row }
+  delete out.payload
+  delete out.Payload
+  delete out.PAYLOAD
+  delete out.rawPayload
+  if (out.values && typeof out.values === 'object') {
+    out.values = { ...out.values }
+    delete out.values.payload
+    delete out.values.Payload
+    delete out.values.PAYLOAD
+    delete out.values.rawPayload
+  }
+  return out
+}
+
+function applyLiteWebhookData(data, lite) {
+  if (!lite) return data
+  if (Array.isArray(data)) return data.map(stripHeavyFieldsFromRow)
+  if (!data || typeof data !== 'object') return data
+  const out = { ...data }
+  if (Array.isArray(out.rows)) out.rows = out.rows.map(stripHeavyFieldsFromRow)
+  if (Array.isArray(out.data)) out.data = out.data.map(stripHeavyFieldsFromRow)
+  return out
+}
+
 function extractSerial(obj) {
   try {
     if (!obj) return null;
@@ -403,6 +430,7 @@ router.post('/booking/webhook', async (req, res) => {
     const httpMethod = (method || 'POST').toUpperCase()
     const action = String(payload?.action || '').toLowerCase()
     const shouldCheckDuplicate = httpMethod !== 'GET' && (!action || action === 'save')
+    const liteMode = Boolean(payload?.lite)
     if (shouldCheckDuplicate) {
       const serialKey = extractSerial(payload)
       if (serialKey && isDuplicateSerial(serialKey)) {
@@ -437,11 +465,12 @@ router.post('/booking/webhook', async (req, res) => {
       }
 
       const requestedPage = Math.max(parseInt(payload?.page || '1', 10) || 1, 1)
-      const requestedPageSize = Math.max(parseInt(payload?.pageSize || payload?.pagesize || '0', 10) || 0, 0)
-      const shouldAutoPaginate = action === 'list' && requestedPage === 1 && requestedPageSize > 100
+      const requestedPageSizeRaw = Math.max(parseInt(payload?.pageSize || payload?.pagesize || '0', 10) || 0, 0)
+      const requestedPageSize = requestedPageSizeRaw > 0 ? requestedPageSizeRaw : 10000
+      const shouldAutoPaginate = action === 'list' && requestedPage === 1
 
       if (!shouldAutoPaginate) {
-        const data = await getPage(payload || {})
+        const data = applyLiteWebhookData(await getPage(payload || {}), liteMode)
         return res.json({ success: true, forwarded: true, status: 200, data })
       }
 
@@ -466,7 +495,7 @@ router.post('/booking/webhook', async (req, res) => {
       }
 
       if (allRows.length > requestedPageSize) allRows = allRows.slice(0, requestedPageSize)
-      const merged = mergeRowsIntoWebhookData(firstData, allRows)
+      const merged = applyLiteWebhookData(mergeRowsIntoWebhookData(firstData, allRows), liteMode)
       cachePut(webhookUrl, payload, merged)
       return res.json({ success: true, forwarded: true, status: 200, data: merged })
     } else {
@@ -478,7 +507,7 @@ router.post('/booking/webhook', async (req, res) => {
         if (serialKey) markSerial(serialKey)
       }
       if (httpMethod === 'GET') cachePut(webhookUrl, payload, resp.data)
-      return res.json({ success: true, forwarded: true, status: resp.status, data: resp.data })
+      return res.json({ success: true, forwarded: true, status: resp.status, data: applyLiteWebhookData(resp.data, liteMode) })
     }
     return res.status(502).json({ success: false, message: 'Webhook call failed', status: resp.status, data: resp.data })
   } catch (error) {
@@ -497,6 +526,7 @@ router.post('/jobcard/webhook', async (req, res) => {
     const httpMethod = (method || 'POST').toUpperCase()
     const action = String(payload?.action || '').toLowerCase()
     const shouldCheckDuplicate = httpMethod !== 'GET' && (!action || action === 'save')
+    const liteMode = Boolean(payload?.lite)
     if (shouldCheckDuplicate) {
       const serialKey = extractSerial(payload)
       if (serialKey && isDuplicateSerial(serialKey)) {
@@ -530,11 +560,12 @@ router.post('/jobcard/webhook', async (req, res) => {
       }
 
       const requestedPage = Math.max(parseInt(payload?.page || '1', 10) || 1, 1)
-      const requestedPageSize = Math.max(parseInt(payload?.pageSize || payload?.pagesize || '0', 10) || 0, 0)
-      const shouldAutoPaginate = action === 'list' && requestedPage === 1 && requestedPageSize > 100
+      const requestedPageSizeRaw = Math.max(parseInt(payload?.pageSize || payload?.pagesize || '0', 10) || 0, 0)
+      const requestedPageSize = requestedPageSizeRaw > 0 ? requestedPageSizeRaw : 10000
+      const shouldAutoPaginate = action === 'list' && requestedPage === 1
 
       if (!shouldAutoPaginate) {
-        const data = await getPage(payload || {})
+        const data = applyLiteWebhookData(await getPage(payload || {}), liteMode)
         return res.json({ success: true, forwarded: true, status: 200, data })
       }
 
@@ -559,7 +590,7 @@ router.post('/jobcard/webhook', async (req, res) => {
       }
 
       if (allRows.length > requestedPageSize) allRows = allRows.slice(0, requestedPageSize)
-      const merged = mergeRowsIntoWebhookData(firstData, allRows)
+      const merged = applyLiteWebhookData(mergeRowsIntoWebhookData(firstData, allRows), liteMode)
       cachePut(webhookUrl, payload, merged)
       return res.json({ success: true, forwarded: true, status: 200, data: merged })
     } else {
@@ -571,7 +602,7 @@ router.post('/jobcard/webhook', async (req, res) => {
         if (serialKey) markSerial(serialKey)
       }
       if (httpMethod === 'GET') cachePut(webhookUrl, payload, resp.data)
-      return res.json({ success: true, forwarded: true, status: resp.status, data: resp.data })
+      return res.json({ success: true, forwarded: true, status: resp.status, data: applyLiteWebhookData(resp.data, liteMode) })
     }
     return res.status(502).json({ success: false, message: 'Webhook call failed', status: resp.status, data: resp.data })
   } catch (error) {
