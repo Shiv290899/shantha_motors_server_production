@@ -467,7 +467,9 @@ router.post('/booking/webhook', async (req, res) => {
       const requestedPage = Math.max(parseInt(payload?.page || '1', 10) || 1, 1)
       const requestedPageSizeRaw = Math.max(parseInt(payload?.pageSize || payload?.pagesize || '0', 10) || 0, 0)
       const requestedPageSize = requestedPageSizeRaw > 0 ? requestedPageSizeRaw : 10000
-      const shouldAutoPaginate = action === 'list' && requestedPage === 1
+      // Only auto-paginate for large one-shot reads (analytics/export style).
+      // Keep normal UI pagination (e.g., pageSize 25/50/100) untouched.
+      const shouldAutoPaginate = action === 'list' && requestedPage === 1 && (requestedPageSizeRaw === 0 || requestedPageSizeRaw > 100)
 
       if (!shouldAutoPaginate) {
         const data = applyLiteWebhookData(await getPage(payload || {}), liteMode)
@@ -562,7 +564,9 @@ router.post('/jobcard/webhook', async (req, res) => {
       const requestedPage = Math.max(parseInt(payload?.page || '1', 10) || 1, 1)
       const requestedPageSizeRaw = Math.max(parseInt(payload?.pageSize || payload?.pagesize || '0', 10) || 0, 0)
       const requestedPageSize = requestedPageSizeRaw > 0 ? requestedPageSizeRaw : 10000
-      const shouldAutoPaginate = action === 'list' && requestedPage === 1
+      // Only auto-paginate for large one-shot reads (analytics/export style).
+      // Keep normal UI pagination (e.g., pageSize 25/50/100) untouched.
+      const shouldAutoPaginate = action === 'list' && requestedPage === 1 && (requestedPageSizeRaw === 0 || requestedPageSizeRaw > 100)
 
       if (!shouldAutoPaginate) {
         const data = applyLiteWebhookData(await getPage(payload || {}), liteMode)
@@ -610,4 +614,7 @@ router.post('/jobcard/webhook', async (req, res) => {
     return res.status(500).json({ success: false, message: 'Failed to post to webhook.', detail: error.message })
   }
 })
+
+// Note: Stock movements are handled via the GAS proxy (/api/stocks/gas). MongoDB stock routes were removed.
+
 module.exports = router
