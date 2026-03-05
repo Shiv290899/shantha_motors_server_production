@@ -1,8 +1,13 @@
 const express = require('express')
 const axios = require('axios')
+const http = require('http')
+const https = require('https')
 
 const router = express.Router()
 const Branch = require('../models/branchModel')
+
+const HTTP_AGENT = new http.Agent({ keepAlive: true, maxSockets: 100 })
+const HTTPS_AGENT = new https.Agent({ keepAlive: true, maxSockets: 100 })
 
 const GOOGLE_FORM_DEFAULTS = {
   fvv: '1',
@@ -297,7 +302,8 @@ const recentSerials = new Map(); // key -> timestamp
 // Lightweight cache for GET webhook proxy responses to reduce perceived latency
 // Especially useful for staff/account views that poll frequently.
 const WEBHOOK_CACHE = new Map(); // key -> { t:number, data:any }
-const CACHE_TTL_MS = 8 * 1000; // 8s TTL (short, safe for near‑real‑time)
+const CACHE_TTL_MS = 20 * 1000; // 20s TTL for faster repeated reads in UI
+const WEBHOOK_INFLIGHT = new Map(); // key -> Promise<any>
 function cacheKey(webhookUrl, payload){
   try { return `${webhookUrl}|${JSON.stringify(payload||{})}` } catch { return String(webhookUrl||'') }
 }
@@ -315,6 +321,13 @@ function cachePut(webhookUrl, payload, data){
     const arr = Array.from(WEBHOOK_CACHE.entries()).sort((a,b)=>a[1].t-b[1].t).slice(0,50)
     for (const [kk] of arr) WEBHOOK_CACHE.delete(kk)
   }
+}
+async function withInflight(key, run){
+  const existing = WEBHOOK_INFLIGHT.get(key)
+  if (existing) return existing
+  const p = (async () => run())()
+  WEBHOOK_INFLIGHT.set(key, p)
+  try { return await p } finally { WEBHOOK_INFLIGHT.delete(key) }
 }
 
 function extractRowsFromWebhookData(data) {
@@ -440,6 +453,9 @@ router.post('/booking/webhook', async (req, res) => {
     const config = {
       headers: { 'Content-Type': 'application/json', ...(headers || {}) },
       validateStatus: () => true,
+      timeout: 30000,
+      httpAgent: HTTP_AGENT,
+      httpsAgent: HTTPS_AGENT,
       // allow large JSON payloads (e.g., base64 PDF) to pass through
       maxBodyLength: Infinity,
       maxContentLength: Infinity,
@@ -451,17 +467,22 @@ router.post('/booking/webhook', async (req, res) => {
       const getPage = async (pagePayload) => {
         const pageCached = cacheGet(webhookUrl, pagePayload)
         if (pageCached) return pageCached
-        const u = new URL(webhookUrl)
-        Object.entries(pagePayload || {}).forEach(([k, v]) => u.searchParams.append(k, String(v)))
-        const pageResp = await axios.get(u.toString(), config)
-        if (!String(pageResp.status).startsWith('2')) {
-          const err = new Error(`Webhook call failed with status ${pageResp.status}`)
-          err.status = pageResp.status
-          err.data = pageResp.data
-          throw err
-        }
-        cachePut(webhookUrl, pagePayload, pageResp.data)
-        return pageResp.data
+        const inflightKey = cacheKey(webhookUrl, pagePayload)
+        return withInflight(inflightKey, async () => {
+          const cachedAgain = cacheGet(webhookUrl, pagePayload)
+          if (cachedAgain) return cachedAgain
+          const u = new URL(webhookUrl)
+          Object.entries(pagePayload || {}).forEach(([k, v]) => u.searchParams.append(k, String(v)))
+          const pageResp = await axios.get(u.toString(), config)
+          if (!String(pageResp.status).startsWith('2')) {
+            const err = new Error(`Webhook call failed with status ${pageResp.status}`)
+            err.status = pageResp.status
+            err.data = pageResp.data
+            throw err
+          }
+          cachePut(webhookUrl, pagePayload, pageResp.data)
+          return pageResp.data
+        })
       }
 
       const requestedPage = Math.max(parseInt(payload?.page || '1', 10) || 1, 1)
@@ -538,6 +559,9 @@ router.post('/jobcard/webhook', async (req, res) => {
     const config = {
       headers: { 'Content-Type': 'application/json', ...(headers || {}) },
       validateStatus: () => true,
+      timeout: 30000,
+      httpAgent: HTTP_AGENT,
+      httpsAgent: HTTPS_AGENT,
       maxBodyLength: Infinity,
       maxContentLength: Infinity,
     }
@@ -548,17 +572,22 @@ router.post('/jobcard/webhook', async (req, res) => {
       const getPage = async (pagePayload) => {
         const pageCached = cacheGet(webhookUrl, pagePayload)
         if (pageCached) return pageCached
-        const u = new URL(webhookUrl)
-        Object.entries(pagePayload || {}).forEach(([k, v]) => u.searchParams.append(k, String(v)))
-        const pageResp = await axios.get(u.toString(), config)
-        if (!String(pageResp.status).startsWith('2')) {
-          const err = new Error(`Webhook call failed with status ${pageResp.status}`)
-          err.status = pageResp.status
-          err.data = pageResp.data
-          throw err
-        }
-        cachePut(webhookUrl, pagePayload, pageResp.data)
-        return pageResp.data
+        const inflightKey = cacheKey(webhookUrl, pagePayload)
+        return withInflight(inflightKey, async () => {
+          const cachedAgain = cacheGet(webhookUrl, pagePayload)
+          if (cachedAgain) return cachedAgain
+          const u = new URL(webhookUrl)
+          Object.entries(pagePayload || {}).forEach(([k, v]) => u.searchParams.append(k, String(v)))
+          const pageResp = await axios.get(u.toString(), config)
+          if (!String(pageResp.status).startsWith('2')) {
+            const err = new Error(`Webhook call failed with status ${pageResp.status}`)
+            err.status = pageResp.status
+            err.data = pageResp.data
+            throw err
+          }
+          cachePut(webhookUrl, pagePayload, pageResp.data)
+          return pageResp.data
+        })
       }
 
       const requestedPage = Math.max(parseInt(payload?.page || '1', 10) || 1, 1)
